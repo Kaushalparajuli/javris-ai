@@ -1,0 +1,528 @@
+<title>Jarvis Desktop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one macOS window, three panes — library | voice + transcript | worker tasks. Deliberately single dark HUD look. */
+:root {
+  --ground: #070a12;
+  --window: rgba(18, 24, 38, .42);
+  --pane: rgba(255, 255, 255, .035);
+  --raised: rgba(255, 255, 255, .07);
+  --line: rgba(255, 255, 255, .10);
+  --shine: rgba(255, 255, 255, .22);
+  --blur: saturate(160%) blur(28px);
+  --fg: #dfe8f0;
+  --muted: #8397aa;
+  --arc: #7fdcff;       /* arc-reactor ice blue: live voice, focus */
+  --arc-dim: #7fdcff22;
+  --gold: #e3b964;      /* worker / tasks */
+  --gold-dim: #e3b96420;
+  --ok: #6fd6a0;
+  --warn: #f0a35e;
+  --display: "Chakra Petch", "Avenir Next Condensed", system-ui, sans-serif;
+  --body: "IBM Plex Sans", -apple-system, "Helvetica Neue", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body { background: var(--ground); color: var(--fg); position: relative; overflow-x: hidden; font-family: var(--body); font-size: 14px; line-height: 1.5; padding: 32px 16px 48px; }
+.aura { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+.aura i { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .55; }
+.aura i:nth-child(1) { width: 46vw; height: 46vw; left: -8vw; top: -10vw; background: #1f6fff; }
+.aura i:nth-child(2) { width: 38vw; height: 38vw; right: -6vw; top: 12vh; background: #00c2d8; opacity: .4; }
+.aura i:nth-child(3) { width: 40vw; height: 40vw; left: 30vw; bottom: -18vw; background: #8a4dff; opacity: .45; }
+.aura i:nth-child(4) { width: 22vw; height: 22vw; right: 18vw; bottom: 6vh; background: #e3b964; opacity: .22; }
+@media (prefers-reduced-motion: no-preference) {
+  .aura i { animation: drift 24s ease-in-out infinite alternate; }
+  .aura i:nth-child(2) { animation-duration: 30s; } .aura i:nth-child(3) { animation-duration: 36s; }
+}
+@keyframes drift { to { transform: translate(4vw, 3vh) scale(1.08); } }
+.page { position: relative; z-index: 1; max-width: 1240px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+.intro { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; justify-content: space-between; }
+.intro h1 { font-family: var(--display); font-weight: 600; font-size: 26px; letter-spacing: .02em; margin: 0; text-wrap: balance; }
+.intro p { margin: 4px 0 0; color: var(--muted); max-width: 62ch; }
+.btn { font: 500 13px var(--body); color: var(--fg); background: var(--raised); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; cursor: pointer; }
+.btn:hover { border-color: var(--arc); }
+.btn:focus-visible, button:focus-visible { outline: 2px solid var(--arc); outline-offset: 2px; }
+.btn.primary { background: linear-gradient(135deg, #9be6ff, #5cc8ff); color: #04202c; border-color: transparent; font-weight: 600; box-shadow: 0 6px 24px #5cc8ff55; }
+
+/* ---------- window chrome ---------- */
+.window { background: var(--window); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); border: 1px solid var(--line); border-radius: 22px; overflow: hidden; box-shadow: 0 40px 120px #0008, inset 0 1px 0 var(--shine); }
+.titlebar { height: 40px; display: flex; align-items: center; gap: 14px; padding: 0 14px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.03); }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.lights i:nth-child(1) { background: #ff5f57; } .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+.titlebar .name { font-family: var(--display); letter-spacing: .12em; font-size: 12px; color: var(--muted); text-transform: uppercase; }
+.titlebar .conn { margin-left: auto; display: flex; gap: 14px; font: 12px var(--mono); color: var(--muted); flex-wrap: wrap; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+
+.panes { display: grid; grid-template-columns: 220px minmax(0, 1fr) 340px; min-height: 640px; }
+.pane { min-width: 0; }
+.sidebar { background: rgba(255,255,255,.025); border-right: 1px solid var(--line); padding: 16px 12px; display: flex; flex-direction: column; gap: 20px; }
+.label { font: 600 11px var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); padding: 0 8px; }
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav a { display: flex; justify-content: space-between; padding: 8px 10px; border-radius: 10px; color: var(--fg); text-decoration: none; font-size: 13px; }
+.nav a.on { background: var(--raised); box-shadow: inset 0 1px 0 var(--shine), 0 0 0 1px var(--line); }
+.nav a small { color: var(--muted); font: 11px var(--mono); }
+.lib { display: flex; flex-direction: column; gap: 2px; }
+.lib div { padding: 8px 10px; border-radius: 10px; font-size: 13px; }
+.lib div span { display: block; color: var(--muted); font: 11px var(--mono); }
+.lib div.on { background: linear-gradient(135deg, #7fdcff26, #7fdcff0a); box-shadow: 0 0 0 1px #7fdcff33; }
+
+/* ---------- centre: voice ---------- */
+.center { display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+.stage { position: relative; display: grid; place-items: center; padding: 20px 16px 8px; }
+canvas#orb { width: 260px; height: 260px; max-width: 100%; }
+.state { text-align: center; display: flex; flex-direction: column; gap: 2px; margin-top: -4px; }
+.state b { font: 600 13px var(--display); letter-spacing: .18em; text-transform: uppercase; color: var(--arc); }
+.state span { color: var(--muted); font-size: 12px; }
+.transcript { flex: 1; overflow-y: auto; padding: 12px 24px 16px; display: flex; flex-direction: column; gap: 12px; max-height: 330px; scroll-behavior: smooth; }
+.msg { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; animation: in .35s ease both; }
+.msg .who { font: 500 11px var(--mono); color: var(--muted); padding-top: 2px; text-transform: uppercase; letter-spacing: .06em; }
+.msg.jarvis .who { color: var(--arc); }
+.msg p { margin: 0; max-width: 62ch; }
+.chip { display: inline-flex; gap: 8px; align-items: center; font: 12px var(--mono); padding: 6px 12px; border-radius: 999px; background: var(--gold-dim); color: var(--gold); border: 1px solid #e3b96440; width: fit-content; }
+.suggest { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 10px 12px; border: 1px dashed #ffffff26; border-radius: 14px; background: var(--pane); font-size: 13px; color: var(--muted); }
+.suggest b { color: var(--fg); font-weight: 500; }
+.suggest .mini { font: 12px var(--body); padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--raised); color: var(--fg); cursor: pointer; }
+.suggest .mini.yes { border-color: var(--arc); color: var(--arc); }
+@keyframes in { from { opacity: .0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+.dock { border-top: 1px solid var(--line); padding: 12px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.mic { width: 46px; height: 46px; border-radius: 50%; border: 1px solid #7fdcff66; background: radial-gradient(circle at 35% 30%, #7fdcff55, #7fdcff14); box-shadow: 0 0 24px #7fdcff44, inset 0 1px 0 var(--shine); display: grid; place-items: center; cursor: pointer; flex: none; }
+.mic svg { width: 18px; height: 18px; fill: var(--arc); }
+.mic.off { border-color: var(--line); background: var(--raised); }
+.mic.off svg { fill: var(--muted); }
+.typebox { flex: 1; min-width: 160px; background: var(--raised); border: 1px solid var(--line); border-radius: 999px; padding: 11px 16px; box-shadow: inset 0 1px 0 #ffffff14; color: var(--muted); font-size: 13px; }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; background: var(--pane); padding: 3px; gap: 2px; }
+.seg button { font: 500 12px var(--body); background: none; border: 0; color: var(--muted); padding: 6px 12px; border-radius: 999px; cursor: pointer; }
+.seg button.on { background: rgba(255,255,255,.12); color: var(--fg); box-shadow: inset 0 1px 0 var(--shine); }
+kbd { font: 11px var(--mono); color: var(--muted); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
+
+/* ---------- right: worker tasks ---------- */
+.tasks { background: var(--pane); padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; max-height: 700px; }
+.tasks header { display: flex; justify-content: space-between; align-items: center; }
+.task { background: linear-gradient(160deg, rgba(255,255,255,.09), rgba(255,255,255,.03)); border: 1px solid var(--line); border-radius: 16px; box-shadow: inset 0 1px 0 #ffffff1f; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.task.live { border-color: #e3b96455; box-shadow: inset 0 1px 0 #ffffff1f, 0 0 32px #e3b9641f; }
+.task .top { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+.task h3 { margin: 0; font-size: 14px; font-weight: 600; text-wrap: balance; }
+.task .meta { font: 11px var(--mono); color: var(--muted); }
+.pill { font: 500 11px var(--mono); padding: 2px 8px; border-radius: 99px; white-space: nowrap; }
+.pill.run { background: var(--gold-dim); color: var(--gold); }
+.pill.done { background: #6fd6a01f; color: var(--ok); }
+.pill.queued { background: #8397aa1f; color: var(--muted); }
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.steps li { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 8px; align-items: center; color: var(--muted); }
+.steps li.done { color: var(--fg); }
+.steps li.now { color: var(--gold); }
+.steps li i { width: 8px; height: 8px; border-radius: 50%; border: 1px solid currentColor; justify-self: center; }
+.steps li.done i { background: var(--ok); border-color: var(--ok); }
+.steps li.now i { background: var(--gold); animation: pulse 1.2s ease-in-out infinite; }
+.steps li em { font: normal 11px var(--mono); color: var(--muted); }
+@keyframes pulse { 50% { opacity: .35; } }
+.bar { height: 4px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.bar b { display: block; height: 100%; background: linear-gradient(90deg, #e3b964, #ffd98f); box-shadow: 0 0 10px #e3b96499; transition: width .6s ease; }
+.summary { font-size: 13px; margin: 0; }
+.sources { display: flex; flex-wrap: wrap; gap: 6px; }
+.sources span { font: 11px var(--mono); color: var(--arc); background: var(--arc-dim); border-radius: 999px; padding: 2px 9px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.actions .mini { font: 12px var(--body); padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--raised); color: var(--fg); cursor: pointer; }
+
+/* ---------- extras row ---------- */
+.extras { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.card { background: var(--window); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); box-shadow: inset 0 1px 0 var(--shine), 0 20px 60px #0006; border: 1px solid var(--line); border-radius: 20px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.card h2 { margin: 0; font: 600 13px var(--display); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.card p { margin: 0; color: var(--muted); font-size: 13px; }
+.menubar { display: flex; justify-content: flex-end; gap: 14px; align-items: center; background: rgba(255,255,255,.08); border-radius: 10px; padding: 5px 10px; font: 12px var(--body); color: var(--fg); }
+.menubar .me { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--arc); box-shadow: 0 0 8px var(--arc); }
+.popover { background: var(--raised); border: 1px solid var(--line); border-radius: 16px; box-shadow: inset 0 1px 0 var(--shine); padding: 12px; display: flex; gap: 12px; align-items: center; }
+.popover .ring { width: 40px; height: 40px; border-radius: 50%; border: 2px solid var(--arc); box-shadow: 0 0 16px #7fdcff55 inset, 0 0 12px #7fdcff44; flex: none; }
+.popover div { min-width: 0; font-size: 13px; }
+.popover div span { display: block; color: var(--muted); font-size: 12px; }
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; font-size: 13px; align-items: center; }
+.note { font: 11px var(--mono); color: var(--muted); }
+
+/* ---------- responsive ---------- */
+@media (max-width: 1080px) {
+  .panes { grid-template-columns: minmax(0, 1fr) 320px; }
+  .sidebar { display: none; }
+}
+@media (max-width: 760px) {
+  .panes { grid-template-columns: minmax(0, 1fr); }
+  .center { border-right: 0; border-bottom: 1px solid var(--line); }
+  .tasks { max-height: none; }
+  .titlebar .conn span:nth-child(3) { display: none; }
+  .transcript { padding: 12px 16px 16px; }
+  .msg { grid-template-columns: 52px minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg, .steps li.now i { animation: none; }
+  .transcript { scroll-behavior: auto; }
+}
+</style>
+
+<div class="aura" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+<div class="page">
+  <div class="intro">
+    <div>
+      <h1>Jarvis — macOS app mockup</h1>
+      <p>Tauri desktop app. Gemini Live handles voice; Codex runs research tasks in the background. Everything below is example data. Press Play demo to watch one full conversation-to-report cycle.</p>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn primary" id="play">▶ Play demo</button>
+      <button class="btn" id="reset">Show finished state</button>
+    </div>
+  </div>
+
+  <div class="window" role="img" aria-label="Mockup of the Jarvis app window">
+    <div class="titlebar">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div class="name">Jarvis</div>
+      <div class="conn">
+        <span><i class="dot" style="background:var(--ok)"></i>Gemini Live</span>
+        <span><i class="dot" style="background:var(--gold)"></i><span id="workerCount">Codex · 1 running</span></span>
+        <span>280 ms</span>
+      </div>
+    </div>
+
+    <div class="panes">
+      <!-- library -->
+      <aside class="pane sidebar">
+        <nav class="nav">
+          <a href="#" class="on">Conversation <small>⌘1</small></a>
+          <a href="#">Tasks <small>⌘2</small></a>
+          <a href="#">Research library <small>⌘3</small></a>
+          <a href="#">Memory <small>⌘4</small></a>
+          <a href="#">Settings <small>⌘,</small></a>
+        </nav>
+        <div>
+          <div class="label">Recent research</div>
+          <div class="lib">
+            <div class="on">Solid-state battery startups<span>today · deep dive</span></div>
+            <div>Tauri vs Electron memory use<span>yesterday · quick</span></div>
+            <div>Nepal EV import tariffs 2026<span>27 Sep · deep dive</span></div>
+            <div>RAG eval frameworks<span>25 Sep · deep dive</span></div>
+            <div>Gemini Live pricing<span>24 Sep · quick</span></div>
+          </div>
+        </div>
+        <div>
+          <div class="label">Saved to</div>
+          <div class="lib"><div>~/Jarvis/research<span>markdown + sources</span></div></div>
+        </div>
+      </aside>
+
+      <!-- voice + transcript -->
+      <section class="pane center">
+        <div class="stage">
+          <canvas id="orb" width="520" height="520" aria-hidden="true"></canvas>
+          <div class="state"><b id="stateLabel">Listening</b><span id="stateSub">Say “Jarvis” or hold ⌥ Space</span></div>
+        </div>
+        <div class="transcript" id="transcript" aria-live="polite"></div>
+        <div class="dock">
+          <button class="mic" id="mic" aria-label="Mute microphone"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg></button>
+          <div class="typebox">Type instead of speaking…</div>
+          <div class="seg" role="group" aria-label="Research depth">
+            <button>Quick</button><button class="on">Deep dive</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- worker tasks -->
+      <aside class="pane tasks" id="tasks">
+        <header><div class="label" style="padding:0">Worker tasks</div><span class="note">codex exec · sandboxed</span></header>
+
+        <article class="task live" id="task4">
+          <div class="top"><h3>Solid-state battery startups: who is closest to production</h3><span class="pill run" id="t4pill">Running</span></div>
+          <div class="meta">#4 · deep dive · started 14:02</div>
+          <div class="bar"><b id="t4bar" style="width:60%"></b></div>
+          <ul class="steps" id="t4steps"></ul>
+          <div id="t4result" hidden>
+            <p class="summary">Three companies have pilot lines shipping samples to carmakers. Mass production timelines still depend on yield at scale. Full comparison table is in the report.</p>
+            <div class="sources" style="margin-top:8px"><span>14 sources</span><span>3 papers</span><span>6 company filings</span></div>
+          </div>
+          <div class="actions" id="t4actions" hidden><button class="mini">Open report</button><button class="mini">Ask a follow-up</button><button class="mini">Reveal in Finder</button></div>
+        </article>
+
+        <article class="task">
+          <div class="top"><h3>Cost per kWh: solid-state vs lithium-ion</h3><span class="pill queued" id="t5pill">Queued</span></div>
+          <div class="meta">#5 · quick · suggested from conversation</div>
+        </article>
+
+        <article class="task">
+          <div class="top"><h3>Tauri vs Electron memory use</h3><span class="pill done">Done</span></div>
+          <div class="meta">#3 · quick · 2 min · yesterday</div>
+          <p class="summary">Tauri idles at roughly a tenth of Electron's memory in the benchmarks found, because it uses the system webview.</p>
+          <div class="sources"><span>6 sources</span></div>
+        </article>
+      </aside>
+    </div>
+  </div>
+
+  <div class="extras">
+    <div class="card">
+      <h2>Menu bar mode</h2>
+      <div class="menubar"><span>Wi-Fi</span><span class="me" title="Jarvis"></span><span>Tue 14:07</span></div>
+      <div class="popover"><div class="ring"></div><div>Research done: solid-state batteries<span>Jarvis is speaking the summary…</span></div></div>
+      <p>The main window can close. Jarvis stays in the menu bar and keeps listening, and results arrive as a spoken summary plus a notification.</p>
+    </div>
+    <div class="card">
+      <h2>Global shortcuts</h2>
+      <div class="keys">
+        <span><kbd>⌥</kbd> <kbd>Space</kbd></span><span>Push to talk from any app</span>
+        <span><kbd>⌥</kbd> <kbd>J</kbd></span><span>Show or hide the Jarvis window</span>
+        <span><kbd>⌥</kbd> <kbd>.</kbd></span><span>Stop speaking / cancel current reply</span>
+        <span><kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>R</kbd></span><span>Research whatever text is selected</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>How the pieces map</h2>
+      <p><b style="color:var(--arc);font-weight:500">Ice blue</b> is the voice layer: Gemini Live, running in the app's webview with the mic.</p>
+      <p><b style="color:var(--gold);font-weight:500">Gold</b> is the worker layer: Rust starts <code>codex exec --json</code> and streams each step to the Tasks pane.</p>
+      <p>The dashed box is the transcript listener suggesting a task you never asked for directly.</p>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(() => {
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---------- 3D voice orb (Three.js) ---------- */
+  const cv = document.getElementById('orb');
+  let mode = 'listen', level = 0.2, t = 0;
+  // Simulated voice amplitude. In the real app this comes from an AnalyserNode on Gemini's output audio.
+  function targetLevel() {
+    if (mode === 'speak') {
+      const syll = Math.abs(Math.sin(t * 11)) * 0.55 + Math.abs(Math.sin(t * 4.3 + 1)) * 0.35;
+      return 0.35 + syll * (0.6 + 0.4 * Math.sin(t * 0.9));
+    }
+    if (mode === 'think') return 0.28;
+    return 0.12 + Math.sin(t * 2) * 0.04;
+  }
+  const COLORS = {
+    listen: [[0.50, 0.86, 1.00], [0.45, 0.35, 1.00]],
+    speak:  [[0.55, 0.92, 1.00], [0.62, 0.40, 1.00]],
+    think:  [[0.89, 0.73, 0.39], [1.00, 0.52, 0.30]],
+  };
+
+  function start3D() {
+    const renderer = new THREE.WebGLRenderer({ canvas: cv, alpha: true, antialias: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(260, 260, false);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
+    camera.position.z = 4.2;
+
+    const uniforms = {
+      uTime: { value: 0 }, uLevel: { value: 0.2 },
+      uA: { value: new THREE.Color(...COLORS.listen[0]) },
+      uB: { value: new THREE.Color(...COLORS.listen[1]) },
+    };
+    const vert = `
+      uniform float uTime; uniform float uLevel;
+      varying float vD; varying vec3 vN; varying vec3 vView;
+      float wave(vec3 p) {
+        return sin(p.x * 3.1 + uTime * 1.7) * sin(p.y * 3.7 + uTime * 1.3) * sin(p.z * 2.9 + uTime * 2.1)
+             + 0.5 * sin(p.x * 7.0 - uTime * 3.0 + p.y * 5.0) * sin(p.z * 6.0 + uTime * 2.4);
+      }
+      void main() {
+        vec3 p = normalize(position);
+        float d = wave(p * (1.0 + uLevel)) * (0.06 + uLevel * 0.32);
+        vD = d;
+        vec3 pos = p * (1.0 + d);
+        vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+        vN = normalize(normalMatrix * p); vView = normalize(-mv.xyz);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = (2.2 + d * 10.0) * (3.6 / -mv.z) * ${Math.min(devicePixelRatio, 2).toFixed(1)};
+      }`;
+    const fragPts = `
+      uniform vec3 uA; uniform vec3 uB; uniform float uLevel;
+      varying float vD; varying vec3 vN; varying vec3 vView;
+      void main() {
+        vec2 c = gl_PointCoord - 0.5; float r = length(c);
+        if (r > 0.5) discard;
+        float rim = pow(1.0 - abs(dot(vN, vView)), 1.6);
+        vec3 col = mix(uA, uB, clamp(vD * 3.0 + 0.5, 0.0, 1.0));
+        float a = smoothstep(0.5, 0.0, r) * (0.35 + rim * 0.9 + uLevel * 0.3);
+        gl_FragColor = vec4(col * (0.8 + rim), a);
+      }`;
+    const fragShell = `
+      uniform vec3 uA; uniform vec3 uB; uniform float uLevel;
+      varying float vD; varying vec3 vN; varying vec3 vView;
+      void main() {
+        float rim = pow(1.0 - abs(dot(vN, vView)), 2.4);
+        vec3 col = mix(uB, uA, rim);
+        gl_FragColor = vec4(col, rim * (0.55 + uLevel * 0.5));
+      }`;
+
+    // particle skin
+    const pts = new THREE.Points(
+      new THREE.IcosahedronGeometry(1, 28),
+      new THREE.ShaderMaterial({ uniforms, vertexShader: vert, fragmentShader: fragPts, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })
+    );
+    // glassy fresnel shell
+    const shell = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(1, 20),
+      new THREE.ShaderMaterial({ uniforms, vertexShader: vert, fragmentShader: fragShell, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })
+    );
+    shell.scale.setScalar(0.96);
+    // inner core
+    const core = new THREE.Mesh(
+      new THREE.SphereGeometry(0.34, 48, 48),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })
+    );
+    const coreGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: (() => { const c = document.createElement('canvas'); c.width = c.height = 128;
+        const g = c.getContext('2d'), gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+        gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(.25, 'rgba(160,230,255,.6)'); gr.addColorStop(1, 'rgba(120,200,255,0)');
+        g.fillStyle = gr; g.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(c); })(),
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+    coreGlow.scale.setScalar(1.6);
+    // orbit rings
+    const rings = [1.35, 1.55, 1.75].map((r, i) => {
+      const m = new THREE.Mesh(new THREE.TorusGeometry(r, 0.006 + i * 0.002, 8, 160),
+        new THREE.MeshBasicMaterial({ color: 0x9fe8ff, transparent: true, opacity: 0.35 - i * 0.08, blending: THREE.AdditiveBlending }));
+      m.rotation.set(Math.PI / 2 + (i - 1) * 0.5, i * 0.6, 0);
+      scene.add(m); return m;
+    });
+    scene.add(shell, pts, coreGlow, core);
+
+    const cA = new THREE.Color(), cB = new THREE.Color();
+    function frame() {
+      if (!reduce) t += 0.016;
+      level += (targetLevel() - level) * 0.18;
+      uniforms.uTime.value = t; uniforms.uLevel.value = level;
+      const [a, b] = COLORS[mode];
+      uniforms.uA.value.lerp(cA.setRGB(...a), 0.06);
+      uniforms.uB.value.lerp(cB.setRGB(...b), 0.06);
+      core.material.color.copy(uniforms.uA.value).lerp(new THREE.Color(1, 1, 1), 0.5);
+      coreGlow.material.color.copy(uniforms.uA.value);
+      core.scale.setScalar(0.85 + level * 0.6);
+      coreGlow.scale.setScalar(1.3 + level * 1.4);
+      pts.rotation.y = shell.rotation.y = t * 0.25;
+      pts.rotation.x = shell.rotation.x = Math.sin(t * 0.3) * 0.3;
+      rings.forEach((r, i) => {
+        r.rotation.z = t * (0.3 + i * 0.15) * (i % 2 ? -1 : 1) * (mode === 'think' ? 3 : 1);
+        r.scale.setScalar(1 + level * 0.12 * (i + 1));
+        r.material.color.copy(uniforms.uA.value);
+      });
+      renderer.render(scene, camera);
+      requestAnimationFrame(frame);
+    }
+    frame();
+  }
+
+  // Flat fallback if WebGL or Three.js is unavailable.
+  function start2D() {
+    const ctx = cv.getContext('2d');
+    (function draw() {
+      const W = cv.width, c = W / 2;
+      ctx.clearRect(0, 0, W, W);
+      level += (targetLevel() - level) * 0.12;
+      const col = mode === 'think' ? '227,185,100' : '127,220,255';
+      for (let r = 0; r < 3; r++) {
+        ctx.beginPath();
+        for (let i = 0; i <= 90; i++) {
+          const a = i / 90 * Math.PI * 2, w = Math.sin(a * (3 + r) + t * (2 + r)) * level * 12;
+          const x = c + Math.cos(a) * (70 + r * 26 + w), y = c + Math.sin(a) * (70 + r * 26 + w);
+          i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        }
+        ctx.strokeStyle = `rgba(${col},${.9 - r * .25})`; ctx.lineWidth = 2; ctx.stroke();
+      }
+      if (!reduce) t += 0.016;
+      requestAnimationFrame(draw);
+    })();
+  }
+  try { if (window.THREE && document.createElement('canvas').getContext('webgl')) start3D(); else start2D(); }
+  catch (e) { start2D(); }
+
+  const stateLabel = document.getElementById('stateLabel'), stateSub = document.getElementById('stateSub');
+  function setMode(m, sub) {
+    mode = m;
+    stateLabel.textContent = { listen: 'Listening', speak: 'Speaking', think: 'Working' }[m];
+    stateLabel.style.color = m === 'think' ? 'var(--gold)' : 'var(--arc)';
+    stateSub.textContent = sub;
+  }
+
+  /* ---------- transcript + tasks ---------- */
+  const tr = document.getElementById('transcript');
+  const say = (who, text) => {
+    const d = document.createElement('div');
+    d.className = 'msg ' + (who === 'Jarvis' ? 'jarvis' : 'you');
+    d.innerHTML = `<div class="who">${who}</div><p></p>`;
+    d.querySelector('p').textContent = text;
+    tr.appendChild(d); tr.scrollTop = tr.scrollHeight;
+  };
+  const chip = html => {
+    const d = document.createElement('div'); d.className = 'msg';
+    d.innerHTML = `<div class="who">tool</div><div class="chip">${html}</div>`;
+    tr.appendChild(d); tr.scrollTop = tr.scrollHeight;
+  };
+  const suggest = () => {
+    const d = document.createElement('div'); d.className = 'msg';
+    d.innerHTML = `<div class="who">listener</div><div class="suggest">You mentioned cost. Research: <b>cost per kWh, solid-state vs lithium-ion</b>? <button class="mini yes">Add task</button><button class="mini">Dismiss</button></div>`;
+    tr.appendChild(d); tr.scrollTop = tr.scrollHeight;
+  };
+
+  const STEPS = [
+    ['Planning search queries', '6 queries'],
+    ['Searching the web', '41 results'],
+    ['Reading top sources', '14 pages'],
+    ['Cross-checking claims', '3 conflicts'],
+    ['Writing report', 'report.md'],
+  ];
+  const stepsEl = document.getElementById('t4steps'), bar = document.getElementById('t4bar');
+  function renderSteps(doneCount) {
+    stepsEl.innerHTML = STEPS.map(([s, n], i) => {
+      const cls = i < doneCount ? 'done' : i === doneCount ? 'now' : '';
+      return `<li class="${cls}"><i></i><span>${s}</span><em>${i < doneCount ? n : ''}</em></li>`;
+    }).join('');
+    bar.style.width = Math.round((doneCount / STEPS.length) * 100) + '%';
+  }
+  function finishTask(done) {
+    document.getElementById('t4pill').className = 'pill ' + (done ? 'done' : 'run');
+    document.getElementById('t4pill').textContent = done ? 'Done · 4 min' : 'Running';
+    document.getElementById('task4').classList.toggle('live', !done);
+    document.getElementById('t4result').hidden = !done;
+    document.getElementById('t4actions').hidden = !done;
+    document.getElementById('workerCount').textContent = done ? 'Codex · idle' : 'Codex · 1 running';
+  }
+
+  const SCRIPT = [
+    [0,    () => { tr.innerHTML = ''; renderSteps(-1); bar.style.width = '0%'; finishTask(false); document.getElementById('t4pill').textContent = 'Waiting'; document.getElementById('t4pill').className = 'pill queued'; setMode('listen', 'Hearing you…'); }],
+    [600,  () => say('You', 'Jarvis, what is the state of solid-state battery startups right now?')],
+    [2200, () => { setMode('speak', 'Gemini Live'); say('Jarvis', 'Good question. Do you want a quick overview or a deep dive?'); }],
+    [4200, () => { setMode('listen', 'Hearing you…'); say('You', 'Deep dive. Focus on who is closest to real production.'); }],
+    [5800, () => chip('→ start_research · depth: deep · task #4')],
+    [6400, () => { setMode('speak', 'Gemini Live'); say('Jarvis', 'On it. I have handed that to the research worker. It usually takes a few minutes, so keep talking to me meanwhile.'); document.getElementById('t4pill').className = 'pill run'; document.getElementById('t4pill').textContent = 'Running'; renderSteps(0); }],
+    [8600, () => { setMode('listen', 'Say “Jarvis” or hold ⌥ Space'); renderSteps(1); }],
+    [9800, () => say('You', 'I also wonder what they cost compared to normal lithium-ion.')],
+    [10800,() => { suggest(); renderSteps(2); }],
+    [12800,() => { setMode('think', 'Codex is cross-checking sources'); renderSteps(3); }],
+    [14600,() => renderSteps(4)],
+    [16400,() => { renderSteps(5); finishTask(true); chip('← task #4 complete · summary injected into Live session'); }],
+    [17200,() => { setMode('speak', 'Gemini Live'); say('Jarvis', 'The battery research is done. Three companies already ship samples to carmakers from pilot lines. The open question is yield at scale. The full report with fourteen sources is on your screen.'); }],
+    [21500,() => setMode('listen', 'Say “Jarvis” or hold ⌥ Space')],
+  ];
+  let timers = [];
+  function play() {
+    timers.forEach(clearTimeout); timers = [];
+    SCRIPT.forEach(([ms, fn]) => timers.push(setTimeout(fn, reduce ? ms / 4 : ms)));
+  }
+  function finished() {
+    timers.forEach(clearTimeout); timers = [];
+    SCRIPT.forEach(([, fn], i) => { if (i < SCRIPT.length - 1) fn(); });
+    tr.querySelectorAll('.msg').forEach(m => m.style.animation = 'none');
+    setMode('listen', 'Say “Jarvis” or hold ⌥ Space');
+  }
+  document.getElementById('play').onclick = play;
+  document.getElementById('reset').onclick = finished;
+  document.getElementById('mic').onclick = e => e.currentTarget.classList.toggle('off');
+  document.querySelectorAll('.seg button').forEach(b => b.onclick = () => {
+    document.querySelectorAll('.seg button').forEach(x => x.classList.toggle('on', x === b));
+  });
+  finished();
+})();
+</script>
