@@ -52,7 +52,7 @@ const FRAG_SHELL = `
     gl_FragColor = vec4(mix(uB, uA, rim), rim * (0.4 + uLevel * 0.5));
   }`;
 
-/** 3D voice sphere: particle skin + glass shell + glowing core + orbit rings, driven by live audio level. */
+/** 3D voice sphere: particle skin + glass shell + glowing core, driven by live audio level. */
 export default function Orb({ source, size = 280 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -93,15 +93,6 @@ export default function Orb({ source, size = 280 }: Props) {
       new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(glowCanvas), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }),
     );
 
-    const rings = [1.35, 1.55, 1.75].map((r, i) => {
-      const m = new THREE.Mesh(
-        new THREE.TorusGeometry(r, 0.006 + i * 0.002, 8, 160),
-        new THREE.MeshBasicMaterial({ color: 0x9fe8ff, transparent: true, opacity: 0.35 - i * 0.08, blending: THREE.AdditiveBlending }),
-      );
-      m.rotation.set(Math.PI / 2 + (i - 1) * 0.5, i * 0.6, 0);
-      scene.add(m);
-      return m;
-    });
     scene.add(shell, pts, glow, core);
 
     const white = new THREE.Color(1, 1, 1);
@@ -129,11 +120,6 @@ export default function Orb({ source, size = 280 }: Props) {
       glow.scale.setScalar(1.3 + level * 1.4);
       pts.rotation.y = shell.rotation.y = t * 0.25;
       pts.rotation.x = shell.rotation.x = Math.sin(t * 0.3) * 0.3;
-      rings.forEach((r, i) => {
-        r.rotation.z = t * (0.3 + i * 0.15) * (i % 2 ? -1 : 1) * (mode === "think" ? 3 : 1);
-        r.scale.setScalar(1 + level * 0.12 * (i + 1));
-        (r.material as THREE.MeshBasicMaterial).color.copy(uniforms.uA.value);
-      });
       renderer.render(scene, camera);
       raf = requestAnimationFrame(frame);
     };

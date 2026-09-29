@@ -1,7 +1,13 @@
+mod briefings;
+mod browser;
 mod capture;
+mod chats;
+mod google;
 mod mic;
+mod search;
 mod settings;
 mod tasks;
+mod wakeword;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -35,6 +41,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -53,8 +60,17 @@ pub fn run() {
         )
         .manage(tasks::TaskStore::default())
         .manage(capture::MicState::default())
+        .manage(browser::BrowserState::default())
+        .manage(wakeword::WakeState::default())
         .setup(move |app| {
             tasks::load_index(app.handle());
+            tauri::async_runtime::spawn(briefings::run_scheduler(app.handle().clone()));
+            tauri::async_runtime::spawn(browser::run_reaper(app.handle().clone()));
+            if settings::load(app.handle()).wake_word {
+                if let Err(e) = wakeword::start(app.handle()) {
+                    eprintln!("Couldn't start listening for \"hey Jarvis\": {e}");
+                }
+            }
 
             #[cfg(target_os = "macos")]
             if let Some(win) = app.get_webview_window("main") {
@@ -112,6 +128,44 @@ pub fn run() {
             tasks::append_note,
             tasks::read_notes,
             tasks::codex_status,
+            tasks::install_codex,
+            tasks::write_document,
+            tasks::new_document,
+            tasks::read_document,
+            tasks::save_document,
+            tasks::save_export,
+            tasks::read_import,
+            tasks::import_document,
+            tasks::save_to_source,
+            tasks::export_pdf,
+            chats::list_chats,
+            search::search,
+            briefings::list_briefings,
+            browser::start_browse,
+            browser::browser_status,
+            browser::install_browser_tools,
+            browser::open_browser_profile,
+            browser::browser_frame,
+            browser::browser_input,
+            browser::close_browser,
+            wakeword::wake_word_set,
+            google::google_status,
+            google::google_connect,
+            google::google_disconnect,
+            google::calendar_list,
+            google::calendar_create,
+            google::mail_search,
+            google::mail_read,
+            google::mail_draft,
+            google::mail_send_draft,
+            briefings::save_briefing,
+            briefings::delete_briefing,
+            briefings::run_briefing_now,
+            chats::load_chat,
+            chats::new_chat,
+            chats::save_chat,
+            chats::rename_chat,
+            chats::delete_chat,
             tasks::codex_models,
             mic::mic_status,
             mic::request_mic,
@@ -127,6 +181,10 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 show_window(app);
+            }
+            // Don't leave Jarvis's hidden browser running after Jarvis quits.
+            if let tauri::RunEvent::Exit = event {
+                browser::shutdown(app);
             }
             let _ = (app, event);
         });

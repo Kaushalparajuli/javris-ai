@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { useEffect, useRef, useState } from "react";
+import { LANGUAGES } from "../lib/languages";
 import { listLiveModels } from "../lib/live";
 import type { CodexModels, CodexStatus, MicDevice, Settings } from "../lib/types";
 
@@ -22,7 +24,43 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
   const [modelMsg, setModelMsg] = useState("");
   const [codex, setCodex] = useState<CodexStatus | null>(null);
   const [checking, setChecking] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [installMsg, setInstallMsg] = useState("");
+  const triedInstall = useRef(false);
   const [codexModels, setCodexModels] = useState<CodexModels | null>(null);
+  const [google, setGoogle] = useState<{ configured: boolean; connected: boolean; email: string } | null>(null);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [googleError, setGoogleError] = useState("");
+  const loadGoogle = () => invoke<typeof google>("google_status").then(setGoogle).catch(() => {});
+  const connectGoogle = async () => {
+    setGoogleError("");
+    setGoogleBusy(true);
+    try {
+      // Sign-in reads the client ID from saved settings, so save first.
+      await invoke("save_settings", { settings: s });
+      await invoke<string>("google_connect");
+    } catch (e) {
+      setGoogleError(String(e));
+    }
+    setGoogleBusy(false);
+    loadGoogle();
+  };
+  const disconnectGoogle = async () => {
+    await invoke("google_disconnect").catch((e) => setGoogleError(String(e)));
+    loadGoogle();
+  };
+  const [browser, setBrowser] = useState<{ installed: boolean; browser: string; message: string } | null>(null);
+  const [browserBusy, setBrowserBusy] = useState(false);
+  const loadBrowser = () => invoke<typeof browser>("browser_status").then(setBrowser).catch(() => {});
+  const setUpBrowser = async () => {
+    setBrowserBusy(true);
+    try {
+      setBrowser(await invoke<typeof browser>("install_browser_tools"));
+    } catch (e) {
+      setBrowser((b) => ({ installed: false, browser: b?.browser ?? "", message: String(e) }));
+    }
+    setBrowserBusy(false);
+  };
   const [mics, setMics] = useState<MicDevice[] | null>(null);
   const loadMics = () => invoke<MicDevice[]>("list_mics").then(setMics).catch(() => setMics([]));
   const [saved, setSaved] = useState("");
@@ -41,12 +79,31 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
     }
   };
 
-  const checkCodex = async () => {
+  const applyStatus = async (status: CodexStatus) => {
+    setCodex(status);
+    if (status.loggedIn) setCodexModels(await invoke<CodexModels>("codex_models"));
+  };
+
+  // Fetch Codex into Jarvis's own folder so research works without opening a terminal.
+  const installCodex = async () => {
+    triedInstall.current = true;
+    setInstalling(true);
+    setInstallMsg("Starting…");
+    try {
+      await applyStatus(await invoke<CodexStatus>("install_codex"));
+    } catch (e) {
+      setCodex({ found: false, path: "", version: "", loggedIn: false, message: `Could not install Codex: ${e}` });
+    }
+    setInstalling(false);
+    setInstallMsg("");
+  };
+
+  const checkCodex = async (autoInstall = false) => {
     setChecking(true);
     const status = await invoke<CodexStatus>("codex_status");
-    setCodex(status);
     setChecking(false);
-    if (status.loggedIn) setCodexModels(await invoke<CodexModels>("codex_models"));
+    await applyStatus(status);
+    if (autoInstall && !status.found && !triedInstall.current) await installCodex();
   };
 
   // The model Codex will actually use, and the thinking levels it supports.
@@ -71,13 +128,21 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
 
   useEffect(() => {
     loadModels(initial.geminiApiKey);
-    checkCodex();
+    checkCodex(true);
     loadMics();
+    loadBrowser();
+    loadGoogle();
+    const un = listen<string>("codex-install", (e) => setInstallMsg(e.payload));
+    return () => {
+      un.then((f) => f());
+    };
   }, []);
 
   const save = async () => {
     try {
       await invoke("save_settings", { settings: s });
+      // Starts or stops listening for "hey Jarvis", and picks up a changed microphone.
+      await invoke("wake_word_set", { enabled: !!s.wakeWord });
       setSaved("Saved");
       onSaved();
     } catch (e) {
@@ -127,6 +192,20 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
               </select>
             </div>
           </div>
+          <label htmlFor="language">Language</label>
+          <select id="language" value={s.language} onChange={(e) => set("language", e.target.value)}>
+            <option value="">Auto (match whoever is talking)</option>
+            {LANGUAGES.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.name}
+              </option>
+            ))}
+          </select>
+          <p className="hint">
+            {s.language
+              ? "Jarvis opens in this language and switches if you speak another one."
+              : "Jarvis replies in whatever language you speak to it."}
+          </p>
           {modelMsg && <p className="hint">{modelMsg}</p>}
           <label htmlFor="mic">Microphone</label>
           <div className="inline">
@@ -147,6 +226,14 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
             <p className="hint warn">No microphone is connected. This Mac has no built-in mic: connect AirPods, a headset or USB mic, or use your iPhone (System Settings → Sound → Input), then press Refresh.</p>
           )}
           <label className="check">
+            <input id="wake" type="checkbox" checked={!!s.wakeWord} onChange={(e) => set("wakeWord", e.target.checked)} />
+            Listen for “Hey Jarvis”
+          </label>
+          <p className="hint">
+            Recognised on this computer: audio isn't sent anywhere until you say it. Your system shows the microphone indicator while Jarvis listens. Saying “Jarvis” on its
+            own can wake it too.
+          </p>
+          <label className="check">
             <input id="headphones" type="checkbox" checked={s.headphones} onChange={(e) => set("headphones", e.target.checked)} />
             I'm using headphones (interrupt Jarvis by talking)
           </label>
@@ -160,15 +247,22 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
           <div className={`status-line ${codex?.loggedIn ? "ok" : "bad"}`}>
             <i />
             <span>
-              {checking
-                ? "Checking Codex…"
-                : codex
-                  ? codex.loggedIn
-                    ? `Ready · ${codex.version} · ${codex.path}`
-                    : codex.message
-                  : "Not checked"}
+              {installing
+                ? installMsg || "Installing Codex…"
+                : checking
+                  ? "Checking Codex…"
+                  : codex
+                    ? codex.loggedIn
+                      ? `Ready · ${codex.version} · ${codex.path}`
+                      : codex.message
+                    : "Not checked"}
             </span>
-            <button className="mini" onClick={checkCodex}>
+            {codex && !codex.found && !installing && (
+              <button className="mini" onClick={installCodex}>
+                Install
+              </button>
+            )}
+            <button className="mini" onClick={() => checkCodex()} disabled={checking || installing}>
               Check again
             </button>
           </div>
@@ -216,6 +310,78 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
             <input id="web" type="checkbox" checked={s.webSearch} onChange={(e) => set("webSearch", e.target.checked)} />
             Let Codex search the web
           </label>
+          <label className="check">
+            <input id="notify" type="checkbox" checked={s.notify ?? true} onChange={(e) => set("notify", e.target.checked)} />
+            Notify me when work finishes while Jarvis isn't in front
+          </label>
+        </section>
+
+        <section>
+          <div className="label">Google · Calendar and Gmail</div>
+          <div className={`status-line ${google?.connected ? "ok" : "bad"}`}>
+            <i />
+            <span>
+              {googleBusy
+                ? "Finish signing in in your browser…"
+                : google?.connected
+                  ? `Connected${google.email ? ` as ${google.email}` : ""}`
+                  : s.googleClientId?.trim()
+                    ? "Not connected"
+                    : "Add your Google client ID below, then connect"}
+            </span>
+            {google?.connected ? (
+              <button className="mini" onClick={disconnectGoogle}>
+                Disconnect
+              </button>
+            ) : (
+              <button className="mini" onClick={connectGoogle} disabled={!s.googleClientId?.trim() || googleBusy}>
+                Connect
+              </button>
+            )}
+          </div>
+          {googleError && <p className="hint warn">{googleError}</p>}
+          <label htmlFor="gid">Client ID</label>
+          <input id="gid" value={s.googleClientId ?? ""} placeholder="…apps.googleusercontent.com" onChange={(e) => set("googleClientId", e.target.value.trim())} />
+          <label htmlFor="gsecret">Client secret</label>
+          <input id="gsecret" type="password" value={s.googleClientSecret ?? ""} placeholder="GOCSPX-…" onChange={(e) => set("googleClientSecret", e.target.value.trim())} />
+          <details className="setup">
+            <summary>How to get these (once, about five minutes)</summary>
+            <ol>
+              <li>Open console.cloud.google.com and create a project, or pick one.</li>
+              <li>Under APIs &amp; Services → Library, enable the Gmail API and the Google Calendar API.</li>
+              <li>
+                Under APIs &amp; Services → OAuth consent screen, name the app “Jarvis”. Choose Internal if you use Google Workspace. Otherwise choose External and add your
+                own address as a test user; in that case Google asks you to connect again about once a week.
+              </li>
+              <li>Under APIs &amp; Services → Credentials, create an OAuth client ID with the type Desktop app.</li>
+              <li>Paste its client ID and secret here, then press Connect and approve access in your browser.</li>
+            </ol>
+          </details>
+          <p className="hint">
+            Jarvis can read your calendar and mail and write drafts. It never sends an email or invites anyone until you confirm it on screen. Access stays on this computer;
+            Disconnect removes it at Google too.
+          </p>
+        </section>
+
+        <section>
+          <div className="label">Browser · for browser tasks</div>
+          <div className={`status-line ${browser?.installed ? "ok" : "bad"}`}>
+            <i />
+            <span>{browserBusy ? "Setting up the browser tools…" : browser?.message ?? "Checking…"}</span>
+            {browser && !browser.installed && browser.browser && !browserBusy && (
+              <button className="mini" onClick={setUpBrowser}>
+                Set up
+              </button>
+            )}
+          </div>
+          <p className="hint">
+            Browser tasks run in Jarvis's own hidden browser and show live in the side panel. It has its own profile, separate from yours, so it isn't signed in
+            anywhere. To let it use a site you have an account on, click into the live view when Codex isn't using it and sign in, or open Jarvis's browser
+            here and sign in once.
+          </p>
+          <button className="mini" onClick={() => invoke("open_browser_profile").catch((e) => setBrowser((b) => (b ? { ...b, message: String(e) } : b)))} disabled={!browser?.browser}>
+            Open Jarvis's browser
+          </button>
         </section>
 
         <footer>

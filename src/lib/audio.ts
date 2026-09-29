@@ -107,6 +107,24 @@ export class Player {
     if (this.ctx.state !== "running") await this.ctx.resume();
   }
 
+  /** A soft rising two-note chime: Jarvis heard its name and is listening. */
+  chime() {
+    const t = this.ctx.currentTime + 0.02;
+    [660, 880].forEach((freq, i) => {
+      const at = t + i * 0.09;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, at);
+      gain.gain.linearRampToValueAtTime(0.12, at + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, at + 0.28);
+      osc.connect(gain).connect(this.ctx.destination);
+      osc.start(at);
+      osc.stop(at + 0.3);
+    });
+  }
+
   play(base64: string) {
     const bin = atob(base64);
     const bytes = new Uint8Array(bin.length);

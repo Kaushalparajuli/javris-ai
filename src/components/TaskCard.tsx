@@ -34,7 +34,20 @@ export default function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: nu
   const progress = running ? Math.min(92, 8 + doneSteps * 7) : 100;
 
   return (
-    <article className={`task ${running ? "live" : ""} ${task.status}`}>
+    // The whole card opens the task in the side panel; its own buttons stop the click there.
+    <article
+      className={`task ${running ? "live" : ""} ${task.status}`}
+      role="button"
+      tabIndex={0}
+      aria-label={`Open ${task.title}`}
+      onClick={() => onOpen(task.id)}
+      onKeyDown={(e) => {
+        if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
+          e.preventDefault();
+          onOpen(task.id);
+        }
+      }}
+    >
       <div className="task-top">
         <h3>{task.title}</h3>
         <span className={`pill ${task.status}`}>
@@ -43,7 +56,7 @@ export default function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: nu
         </span>
       </div>
       <div className="meta">
-        #{task.id} · {task.kind === "image" ? "image" : task.depth === "quick" ? "quick" : "deep dive"} · {clock(task.startedAt)}
+        #{task.id} · {task.kind === "image" ? "image" : task.kind === "document" ? "document" : task.kind === "browser" ? "browser" : task.depth === "quick" ? "quick" : "deep dive"} · {clock(task.startedAt)}
         {running ? ` · ${elapsed(task, now)}` : ""}
         {task.parentId ? ` · follow-up to #${task.parentId}` : ""}
         {task.refs?.length ? ` · ${task.refs.length} reference${task.refs.length > 1 ? "s" : ""}` : ""}
@@ -70,7 +83,7 @@ export default function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: nu
       {task.kind === "image" && task.images.length > 0 && (
         <div className={`thumbs n${Math.min(task.images.length, 4)}`}>
           {task.images.slice(0, 4).map((p) => (
-            <ImageThumb key={p} path={p} className="thumb" alt={task.title} onClick={() => onOpen(task.id)} />
+            <ImageThumb key={p} path={p} className="thumb" alt={task.title} />
           ))}
         </div>
       )}
@@ -82,14 +95,14 @@ export default function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: nu
           {task.searches > 0 && <span>{task.searches} searches</span>}
         </div>
       )}
-      <div className="actions">
+      <div className="actions" onClick={(e) => e.stopPropagation()}>
         {task.status === "done" && (
           <button className="mini" onClick={() => onOpen(task.id)}>
-            {task.kind === "image" ? "View" : "Open report"}
+            {task.kind === "image" || task.kind === "browser" ? "View" : task.kind === "document" ? "Open document" : "Open report"}
           </button>
         )}
         <button className="mini" onClick={() => invoke("reveal_task", { id: task.id }).catch(() => {})}>
-          Show in Finder
+          Show file
         </button>
         {running && (
           <button className="mini" onClick={() => invoke("cancel_task", { id: task.id }).catch(() => {})}>

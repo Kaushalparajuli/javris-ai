@@ -50,6 +50,12 @@ pub struct Task {
     pub dir: String,
     pub thread_id: String,
     pub parent_id: Option<u32>,
+    /// Conversation this task belongs to. Empty on tasks saved before chats existed.
+    #[serde(default)]
+    pub chat_id: String,
+    /// For a document opened from a file: that file, so edits can be saved back to it.
+    #[serde(default)]
+    pub source: String,
     pub started_at: u64,
     pub finished_at: Option<u64>,
     pub searches: u32,
@@ -109,11 +115,11 @@ pub struct CodexStatus {
 
 const MAX_STEPS: usize = 40;
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-fn truncate(s: &str, n: usize) -> String {
+pub(crate) fn truncate(s: &str, n: usize) -> String {
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if s.chars().count() <= n {
         s
@@ -141,7 +147,7 @@ fn index_file(app: &AppHandle) -> PathBuf {
     settings::research_root(app).join("tasks.json")
 }
 
-fn save_index(app: &AppHandle) {
+pub(crate) fn save_index(app: &AppHandle) {
     let store = app.state::<TaskStore>();
     let mut list: Vec<Task> = store.tasks.lock().unwrap().values().cloned().collect();
     list.sort_by_key(|t| t.id);
@@ -176,36 +182,54 @@ fn emit_update(app: &AppHandle, id: u32) {
     }
 }
 
-fn find_codex(app: &AppHandle, s: &Settings) -> Option<PathBuf> {
+/// npm installs `.cmd` shims on Windows (codex.cmd, npm.cmd) and plain executables elsewhere.
+pub(crate) fn exe(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.cmd")
+    } else {
+        name.to_string()
+    }
+}
+
+pub(crate) fn find_codex(app: &AppHandle, s: &Settings) -> Option<PathBuf> {
     if !s.codex_path.trim().is_empty() {
         let p = PathBuf::from(s.codex_path.trim());
         return p.exists().then_some(p);
     }
     let home = settings::home(app);
-    let mut candidates = vec![
-        // Private copy installed by Jarvis setup; used first because a global npm install can break.
-        home.join("Jarvis/.codex-cli/node_modules/.bin/codex"),
-        PathBuf::from("/opt/homebrew/bin/codex"),
-        PathBuf::from("/usr/local/bin/codex"),
-        home.join(".local/bin/codex"),
-        home.join(".npm-global/bin/codex"),
-        home.join(".volta/bin/codex"),
-        home.join(".bun/bin/codex"),
-    ];
-    if let Ok(path) = std::env::var("PATH") {
-        candidates.extend(path.split(':').map(|d| Path::new(d).join("codex")));
+    let codex = exe("codex");
+    // Private copy installed by Jarvis setup; used first because a global npm install can break.
+    let mut candidates = vec![codex_home(app).join("node_modules").join(".bin").join(&codex)];
+    if !cfg!(windows) {
+        candidates.extend(["/opt/homebrew/bin/codex", "/usr/local/bin/codex"].map(PathBuf::from));
+        candidates.extend([".local/bin", ".npm-global/bin", ".volta/bin", ".bun/bin"].map(|d| home.join(d).join("codex")));
     }
-    candidates.into_iter().find(|p| p.exists())
+    if let Some(path) = std::env::var_os("PATH") {
+        candidates.extend(std::env::split_paths(&path).map(|d| d.join(&codex)));
+    }
+    candidates.into_iter().find(|p| p.is_file())
 }
 
-/// Apps launched from Finder get a minimal PATH, but the npm build of codex needs `node`.
-fn child_path(app: &AppHandle) -> String {
+/// PATH for child processes. Apps launched from Finder or Explorer get a minimal PATH, but the
+/// npm build of codex needs `node`, so add the usual install folders and the folder npm lives in.
+pub(crate) fn child_path(app: &AppHandle) -> String {
     let home = settings::home(app);
-    format!(
-        "/opt/homebrew/bin:/usr/local/bin:{h}/.local/bin:{h}/.volta/bin:{h}/.bun/bin:/usr/bin:/bin:/usr/sbin:/sbin:{rest}",
-        h = home.display(),
-        rest = std::env::var("PATH").unwrap_or_default()
-    )
+    let mut dirs: Vec<PathBuf> = vec![];
+    if !cfg!(windows) {
+        dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+        dirs.extend([".local/bin", ".volta/bin", ".bun/bin"].map(|d| home.join(d)));
+        dirs.extend(["/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(PathBuf::from));
+    }
+    // node sits next to npm: nvm, the official installer, Program Files\nodejs.
+    if let Some(dir) = find_npm(app).and_then(|p| p.parent().map(Path::to_path_buf)) {
+        dirs.push(dir);
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&path));
+    }
+    std::env::join_paths(dirs)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| std::env::var("PATH").unwrap_or_default())
 }
 
 fn research_prompt(s: &Settings, request: &str, depth: &str) -> String {
@@ -284,6 +308,44 @@ fn image_followup_prompt(feedback: &str) -> String {
     )
 }
 
+/// The file a document task keeps its Markdown in.
+pub(crate) const DOCUMENT_FILE: &str = "document.md";
+
+fn document_prompt(s: &Settings, title: &str, brief: &str, research: bool) -> String {
+    let who = if s.user_name.trim().is_empty() { "The user".to_string() } else { s.user_name.trim().to_string() };
+    let facts = if research {
+        "- Research on the web where facts, numbers or recent events matter. Cite sources inline as [1], [2] and end with a '## Sources' list of full URLs."
+    } else {
+        "- Write from the brief and what you know; don't browse the web. Never invent facts, figures or quotes: where real data is needed, leave a clear placeholder such as [add figure]."
+    };
+    format!(
+        "You are the writer for Jarvis, a voice assistant. {who} asked for a document titled \"{title}\":\n\n\
+         \"{brief}\"\n\n\
+         Rules:\n\
+         - Work only inside the current directory. Do not touch files anywhere else.\n\
+         {facts}\n\
+         - Write the document into {DOCUMENT_FILE} in the current directory as clean Markdown. The user is watching it \
+           appear, so save as you go: first save the opening and the first section, then add each remaining section and \
+           save after each one.\n\
+         - Don't repeat the title as a heading (the app shows it). Use ## headings for sections and tables where they help.\n\
+         - Your FINAL message is read aloud: one or two plain spoken sentences about what you wrote. No markdown, no paths."
+    )
+}
+
+fn document_edit_prompt(change: &str, research: bool) -> String {
+    let facts = if research {
+        "Research on the web if the change needs new facts, and cite any new sources."
+    } else {
+        "Don't browse the web."
+    };
+    format!(
+        "The user wants this change to {DOCUMENT_FILE} in the current directory: \"{change}\"\n\n\
+         Edit {DOCUMENT_FILE} in place with precise edits and keep everything the change doesn't touch exactly as it is. \
+         {facts} Work only inside the current directory. \
+         Your FINAL message is read aloud: one or two plain spoken sentences about what changed. No markdown, no paths."
+    )
+}
+
 fn followup_prompt(question: &str) -> String {
     format!(
         "Follow-up question from the user about this research: \"{question}\"\n\n\
@@ -339,9 +401,26 @@ fn apply_event(task: &mut Task, v: &Value, last_message: &mut String) {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    ("Writing the report".into(), files.join(", "))
+                    let what = if task.kind == "document" { "Saving the document" } else { "Writing the report" };
+                    (what.into(), files.join(", "))
                 }
-                "mcp_tool_call" => ("Using a tool".into(), format!("{} {}", s("server"), s("tool")).trim().to_string()),
+                "mcp_tool_call" => {
+                    let tool = s("tool");
+                    // Arguments arrive as an object, or as JSON text in some versions.
+                    let args = match &item["arguments"] {
+                        Value::String(text) => serde_json::from_str(text).unwrap_or(Value::Null),
+                        other => other.clone(),
+                    };
+                    let arg = ["url", "element", "text", "key", "values"].iter().find_map(|k| match &args[*k] {
+                        Value::String(v) if !v.is_empty() => Some(v.clone()),
+                        Value::Array(a) if !a.is_empty() => Some(a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")),
+                        _ => None,
+                    });
+                    match crate::browser::step_label(&tool) {
+                        Some(label) => (label.to_string(), truncate(&arg.unwrap_or_default(), 70)),
+                        None => ("Using a tool".into(), format!("{} {}", s("server"), tool).trim().to_string()),
+                    }
+                }
                 "reasoning" => ("Thinking".into(), truncate(&s("text"), 90)),
                 "todo_list" => {
                     let items = item["items"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -355,7 +434,8 @@ fn apply_event(task: &mut Task, v: &Value, last_message: &mut String) {
                     if done {
                         *last_message = s("text");
                     }
-                    ("Drafting the answer".into(), String::new())
+                    let what = if task.kind == "document" { "Wrapping up" } else { "Drafting the answer" };
+                    (what.into(), String::new())
                 }
                 "error" => {
                     task.error = s("message");
@@ -407,7 +487,7 @@ fn explain_failure(stderr: &str, fallback: &str) -> String {
 }
 
 /// Spawn codex and follow its JSON stream until it exits. Runs in the background.
-async fn run_codex(app: AppHandle, id: u32, args: Vec<String>, dir: PathBuf, codex: PathBuf) {
+pub(crate) async fn run_codex(app: AppHandle, id: u32, args: Vec<String>, dir: PathBuf, codex: PathBuf) {
     let summary_file = dir.join("summary.txt");
     let _ = std::fs::remove_file(&summary_file);
 
@@ -503,7 +583,7 @@ async fn run_codex(app: AppHandle, id: u32, args: Vec<String>, dir: PathBuf, cod
     }
 }
 
-fn finish(app: &AppHandle, id: u32, status: Status, summary: String, error: String) {
+pub(crate) fn finish(app: &AppHandle, id: u32, status: Status, summary: String, error: String) {
     let task = {
         let store = app.state::<TaskStore>();
         let mut tasks = store.tasks.lock().unwrap();
@@ -515,8 +595,17 @@ fn finish(app: &AppHandle, id: u32, status: Status, summary: String, error: Stri
         for st in t.steps.iter_mut() {
             st.done = true;
         }
-        if let Ok(report) = std::fs::read_to_string(Path::new(&t.dir).join("report.md")) {
-            t.sources = count_sources(&report);
+        let main = if t.kind == "document" { DOCUMENT_FILE } else { "report.md" };
+        if let Ok(text) = std::fs::read_to_string(Path::new(&t.dir).join(main)) {
+            t.sources = count_sources(&text);
+        }
+        let written = std::fs::read_to_string(Path::new(&t.dir).join(DOCUMENT_FILE)).map(|d| !d.trim().is_empty()).unwrap_or(false);
+        if t.kind == "document" && t.status == Status::Done && !written {
+            t.status = Status::Failed;
+            t.error = "Codex finished but didn't write the document.".into();
+        }
+        if t.kind == "browser" {
+            t.images = images_since(Path::new(&t.dir), t.started_at);
         }
         if t.kind == "image" {
             t.images = images_since(Path::new(&t.dir), t.started_at);
@@ -530,6 +619,36 @@ fn finish(app: &AppHandle, id: u32, status: Status, summary: String, error: Stri
     save_index(app);
     let _ = app.emit("task-update", &task);
     let _ = app.emit("task-finished", &task);
+    notify_finished(app, &task);
+}
+
+/// A system notification when work finishes while Jarvis isn't in front (it often sits in the
+/// menu bar while tasks run). Uses the OS notification centre, so it works the same on Windows.
+fn notify_finished(app: &AppHandle, task: &Task) {
+    use tauri_plugin_notification::NotificationExt;
+    if !settings::load(app).notify || task.status == Status::Cancelled {
+        return;
+    }
+    let in_front = app
+        .get_webview_window("main")
+        .map(|w| w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false))
+        .unwrap_or(false);
+    if in_front {
+        return;
+    }
+    let what = match task.kind.as_str() {
+        "image" => "Images",
+        "document" => "Document",
+        "browser" => "Browser task",
+        _ if task.title.starts_with("Briefing:") => "Briefing",
+        _ => "Research",
+    };
+    let (title, body) = if task.status == Status::Done {
+        (format!("{what} ready"), if task.summary.trim().is_empty() { task.title.clone() } else { format!("{} · {}", task.title, truncate(&task.summary, 140)) })
+    } else {
+        (format!("{what} failed"), format!("{} · {}", task.title, truncate(&task.error, 140)))
+    };
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 fn reasoning_for(s: &Settings, depth: &str) -> Option<String> {
@@ -540,11 +659,21 @@ fn reasoning_for(s: &Settings, depth: &str) -> Option<String> {
     }
 }
 
-fn base_args(s: &Settings, dir: &Path, depth: &str, web: bool) -> Vec<String> {
+pub(crate) fn base_args(s: &Settings, dir: &Path, depth: &str, web: bool) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "exec".into(),
         "--json".into(),
         "--skip-git-repo-check".into(),
+        // Workers use only the tools Jarvis gives them: no plugins, and never the ChatGPT app's
+        // own browser or control of the desktop.
+        "--disable".into(),
+        "plugins".into(),
+        "--disable".into(),
+        "browser_use".into(),
+        "--disable".into(),
+        "browser_use_external".into(),
+        "--disable".into(),
+        "computer_use".into(),
         "--sandbox".into(),
         "workspace-write".into(),
         "-C".into(),
@@ -567,14 +696,28 @@ fn base_args(s: &Settings, dir: &Path, depth: &str, web: bool) -> Vec<String> {
     args
 }
 
-fn new_task(app: &AppHandle, kind: &str, title: &str, request: &str, depth: &str, dir: Option<PathBuf>, parent: Option<u32>) -> Result<Task, String> {
+pub(crate) fn new_task(
+    app: &AppHandle,
+    kind: &str,
+    title: &str,
+    request: &str,
+    depth: &str,
+    dir: Option<PathBuf>,
+    parent: Option<u32>,
+    chat_id: &str,
+) -> Result<Task, String> {
     let store = app.state::<TaskStore>();
     let mut tasks = store.tasks.lock().unwrap();
     let id = tasks.keys().max().copied().unwrap_or(0) + 1;
     let dir = match dir {
         Some(d) => d,
         None => settings::research_root(app)
-            .join(if kind == "image" { "images" } else { "research" })
+            .join(match kind {
+                "image" => "images",
+                "document" => "documents",
+                "browser" => "browser",
+                _ => "research",
+            })
             .join(format!("{id:04}-{}", slug(title))),
     };
     std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
@@ -589,6 +732,8 @@ fn new_task(app: &AppHandle, kind: &str, title: &str, request: &str, depth: &str
         dir: dir.display().to_string(),
         thread_id: String::new(),
         parent_id: parent,
+        chat_id: chat_id.to_string(),
+        source: String::new(),
         started_at: now_ms(),
         finished_at: None,
         searches: 0,
@@ -606,6 +751,11 @@ fn new_task(app: &AppHandle, kind: &str, title: &str, request: &str, depth: &str
     Ok(task)
 }
 
+/// Every task, for other parts of the app (search, briefings) to read.
+pub(crate) fn snapshot(app: &AppHandle) -> Vec<Task> {
+    app.state::<TaskStore>().tasks.lock().unwrap().values().cloned().collect()
+}
+
 #[tauri::command]
 pub fn list_tasks(store: State<'_, TaskStore>) -> Vec<Task> {
     let mut list: Vec<Task> = store.tasks.lock().unwrap().values().cloned().collect();
@@ -614,11 +764,11 @@ pub fn list_tasks(store: State<'_, TaskStore>) -> Vec<Task> {
 }
 
 #[tauri::command]
-pub fn start_task(app: AppHandle, title: String, request: String, depth: String) -> Result<Task, String> {
+pub fn start_task(app: AppHandle, title: String, request: String, depth: String, chat_id: Option<String>) -> Result<Task, String> {
     let s = settings::load(&app);
     let codex = find_codex(&app, &s).ok_or("Codex CLI was not found. Install it with `npm install -g @openai/codex` or set its path in Settings.")?;
     let title = if title.trim().is_empty() { truncate(&request, 60) } else { title };
-    let task = new_task(&app, "research", &title, &request, &depth, None, None)?;
+    let task = new_task(&app, "research", &title, &request, &depth, None, None, chat_id.as_deref().unwrap_or(""))?;
     let dir = PathBuf::from(&task.dir);
     let mut args = base_args(&s, &dir, &task.depth, true);
     args.push(research_prompt(&s, &request, &task.depth));
@@ -629,7 +779,7 @@ pub fn start_task(app: AppHandle, title: String, request: String, depth: String)
 }
 
 #[tauri::command]
-pub fn followup_task(app: AppHandle, id: u32, question: String) -> Result<Task, String> {
+pub fn followup_task(app: AppHandle, id: u32, question: String, chat_id: Option<String>) -> Result<Task, String> {
     let s = settings::load(&app);
     let codex = find_codex(&app, &s).ok_or("Codex CLI was not found.")?;
     let parent = app.state::<TaskStore>().tasks.lock().unwrap().get(&id).cloned().ok_or(format!("There is no task #{id}."))?;
@@ -638,12 +788,35 @@ pub fn followup_task(app: AppHandle, id: u32, question: String) -> Result<Task, 
     }
     let dir = PathBuf::from(&parent.dir);
     let image = parent.kind == "image";
-    let title = if image { format!("Edit: {}", truncate(&question, 50)) } else { format!("Follow-up: {}", truncate(&question, 50)) };
-    let task = new_task(&app, &parent.kind, &title, &question, &parent.depth, Some(dir.clone()), Some(id))?;
+    let document = parent.kind == "document";
+    let browser = parent.kind == "browser";
+    let title = if browser {
+        format!("Continue: {}", truncate(&question, 50))
+    } else if image || document {
+        format!("Edit: {}", truncate(&question, 50))
+    } else {
+        format!("Follow-up: {}", truncate(&question, 50))
+    };
+    let chat = chat_id.filter(|c| !c.is_empty()).unwrap_or_else(|| parent.chat_id.clone());
+    let task = new_task(&app, &parent.kind, &title, &question, &parent.depth, Some(dir.clone()), Some(id), &chat)?;
+    if browser {
+        // Replies go through Jarvis's browser, which is still on the page where the task stopped.
+        save_index(&app);
+        let _ = app.emit("task-update", &task);
+        let tail = vec!["resume".into(), parent.thread_id.clone(), crate::browser::reply_prompt(&s, &question)];
+        crate::browser::spawn_run(app.clone(), task.id, s, dir, codex, tail);
+        return Ok(task);
+    }
     let mut args = base_args(&s, &dir, &parent.depth, !image);
     args.push("resume".into());
     args.push(parent.thread_id.clone());
-    args.push(if image { image_followup_prompt(&question) } else { followup_prompt(&question) });
+    args.push(if image {
+        image_followup_prompt(&question)
+    } else if document {
+        document_edit_prompt(&question, true)
+    } else {
+        followup_prompt(&question)
+    });
     save_index(&app);
     let _ = app.emit("task-update", &task);
     tauri::async_runtime::spawn(run_codex(app.clone(), task.id, args, dir, codex));
@@ -659,12 +832,13 @@ pub fn start_image(
     aspect: Option<String>,
     refs: Option<Vec<String>>,
     ref_notes: Option<String>,
+    chat_id: Option<String>,
 ) -> Result<Task, String> {
     let s = settings::load(&app);
     let codex = find_codex(&app, &s).ok_or("Codex CLI was not found. Set its path in Settings.")?;
     let count = count.unwrap_or(1).clamp(1, 4);
     let title = if title.trim().is_empty() { truncate(&prompt, 60) } else { title };
-    let task = new_task(&app, "image", &title, &prompt, "quick", None, None)?;
+    let task = new_task(&app, "image", &title, &prompt, "quick", None, None, chat_id.as_deref().unwrap_or(""))?;
     let dir = PathBuf::from(&task.dir);
 
     // Copy reference files next to the task so Codex (sandboxed to this folder) can read them.
@@ -775,8 +949,11 @@ pub fn read_report(store: State<'_, TaskStore>, id: u32) -> Result<String, Strin
 #[tauri::command]
 pub fn reveal_task(app: AppHandle, id: u32) -> Result<(), String> {
     let dir = app.state::<TaskStore>().tasks.lock().unwrap().get(&id).map(|t| t.dir.clone()).ok_or(format!("There is no task #{id}."))?;
-    let report = Path::new(&dir).join("report.md");
-    let target = if report.exists() { report } else { PathBuf::from(dir) };
+    let target = ["report.md", DOCUMENT_FILE]
+        .iter()
+        .map(|f| Path::new(&dir).join(f))
+        .find(|p| p.exists())
+        .unwrap_or_else(|| PathBuf::from(&dir));
     app.opener().reveal_item_in_dir(target).map_err(|e| e.to_string())
 }
 
@@ -850,6 +1027,93 @@ pub async fn codex_status(app: AppHandle) -> CodexStatus {
         logged_in,
         message: if logged_in { truncate(&text, 120) } else { "Not logged in. Run `codex login` in Terminal.".into() },
     }
+}
+
+/// Jarvis keeps its own copy of the Codex CLI here, so a missing or broken global
+/// npm install can't stop research from working. `find_codex` looks here first.
+fn codex_home(app: &AppHandle) -> PathBuf {
+    settings::home(app).join("Jarvis").join(".codex-cli")
+}
+
+/// "v20.19.5" → [20, 19, 5], so v20 sorts above v8 (a plain string sort gets that wrong).
+fn node_version(dir: &Path) -> Vec<u32> {
+    let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    name.trim_start_matches('v').split('.').map(|x| x.parse().unwrap_or(0)).collect()
+}
+
+/// Installing Codex needs npm. Apps launched from Finder or Explorer get a minimal PATH,
+/// so after PATH look in each OS's usual install folders.
+pub(crate) fn find_npm(app: &AppHandle) -> Option<PathBuf> {
+    let home = settings::home(app);
+    let npm = exe("npm");
+    let mut candidates: Vec<PathBuf> = vec![];
+    if let Some(path) = std::env::var_os("PATH") {
+        candidates.extend(std::env::split_paths(&path).map(|d| d.join(&npm)));
+    }
+    if cfg!(windows) {
+        for var in ["ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(dir) = std::env::var_os(var) {
+                candidates.push(PathBuf::from(dir).join("nodejs").join(&npm));
+            }
+        }
+        if let Some(dir) = std::env::var_os("APPDATA") {
+            candidates.push(PathBuf::from(dir).join("npm").join(&npm));
+        }
+    } else {
+        candidates.extend(["/opt/homebrew/bin/npm", "/usr/local/bin/npm"].map(PathBuf::from));
+        candidates.push(home.join(".volta").join("bin").join("npm"));
+        // nvm keeps each Node version in its own folder (v20.19.5, v22.1.0…); newest first.
+        let mut versions: Vec<PathBuf> = std::fs::read_dir(home.join(".nvm").join("versions").join("node"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        versions.sort_by_key(|p| std::cmp::Reverse(node_version(p)));
+        candidates.extend(versions.into_iter().map(|v| v.join("bin").join("npm")));
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+fn install_failed(message: String) -> CodexStatus {
+    CodexStatus { found: false, path: String::new(), version: String::new(), logged_in: false, message }
+}
+
+/// Install the Codex CLI into Jarvis's own folder, then report the resulting status.
+/// Progress lines go to the UI as `codex-install`.
+#[tauri::command]
+pub async fn install_codex(app: AppHandle) -> CodexStatus {
+    let Some(npm) = find_npm(&app) else {
+        return install_failed("Could not find npm. Install Node.js from nodejs.org, then try again.".into());
+    };
+    let dir = codex_home(&app);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return install_failed(format!("Could not create {}: {e}", dir.display()));
+    }
+
+    let _ = app.emit("codex-install", "Downloading the Codex CLI…");
+    let mut cmd = Command::new(&npm);
+    cmd.args(["install", "--no-fund", "--no-audit", "--prefix"])
+        .arg(&dir)
+        .arg("@openai/codex@latest")
+        .env("PATH", child_path(&app))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let out = match tokio::time::timeout(Duration::from_secs(300), cmd.output()).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return install_failed(format!("Could not run npm: {e}")),
+        Err(_) => return install_failed("The install took longer than five minutes and was stopped.".into()),
+    };
+    if !out.status.success() {
+        let err = format!("{}{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout));
+        return install_failed(format!("npm could not install Codex: {}", truncate(&err, 200)));
+    }
+
+    let _ = app.emit("codex-install", "Installed. Checking Codex…");
+    codex_status(app).await
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -935,4 +1199,465 @@ pub async fn codex_models(app: AppHandle) -> CodexModels {
         });
     }
     out
+}
+
+fn task_dir(app: &AppHandle, id: u32) -> Result<String, String> {
+    app.state::<TaskStore>().tasks.lock().unwrap().get(&id).map(|t| t.dir.clone()).ok_or(format!("There is no task #{id}."))
+}
+
+/// Have Codex write or revise a document. An empty document is written from scratch, anything
+/// else is edited in place. The work shows as a task, and the editor follows the file as Codex
+/// saves it. Every call starts fresh from the file on disk, so typing done by hand is respected.
+#[tauri::command]
+pub fn write_document(app: AppHandle, id: u32, instructions: String, research: Option<bool>, chat_id: Option<String>) -> Result<Task, String> {
+    let s = settings::load(&app);
+    let codex = find_codex(&app, &s).ok_or("Codex CLI was not found. Open Settings to install it.")?;
+    // Edits share the original document's folder; always work from the original.
+    let root = {
+        let store = app.state::<TaskStore>();
+        let tasks = store.tasks.lock().unwrap();
+        let mut root = tasks.get(&id).cloned().ok_or(format!("There is no document #{id}."))?;
+        while let Some(parent) = root.parent_id.and_then(|p| tasks.get(&p)) {
+            root = parent.clone();
+        }
+        root
+    };
+    if root.kind != "document" {
+        return Err(format!("#{id} isn't a document."));
+    }
+    let dir = PathBuf::from(&root.dir);
+    let fresh = std::fs::read_to_string(dir.join(DOCUMENT_FILE)).map(|d| d.trim().is_empty()).unwrap_or(true);
+    let research = research.unwrap_or(false);
+    let depth = if research { "deep" } else { "quick" };
+    let title = if fresh { format!("Writing: {}", truncate(&root.title, 50)) } else { format!("Edit: {}", truncate(&instructions, 50)) };
+    let chat = chat_id.filter(|c| !c.is_empty()).unwrap_or_else(|| root.chat_id.clone());
+    let task = new_task(&app, "document", &title, &instructions, depth, Some(dir.clone()), Some(root.id), &chat)?;
+    let mut args = base_args(&s, &dir, depth, research);
+    args.push(if fresh { document_prompt(&s, &root.title, &instructions, research) } else { document_edit_prompt(&instructions, research) });
+    save_index(&app);
+    let _ = app.emit("task-update", &task);
+    tauri::async_runtime::spawn(run_codex(app.clone(), task.id, args, dir, codex));
+    Ok(task)
+}
+
+/// An empty document for the user, or the live writer, to fill in. No worker involved.
+#[tauri::command]
+pub fn new_document(app: AppHandle, title: String, chat_id: Option<String>) -> Result<Task, String> {
+    let title = if title.trim().is_empty() { "Untitled document".to_string() } else { title };
+    let task = new_task(&app, "document", &title, "", "quick", None, None, chat_id.as_deref().unwrap_or(""))?;
+    std::fs::write(Path::new(&task.dir).join(DOCUMENT_FILE), "").map_err(|e| e.to_string())?;
+    let task = {
+        let store = app.state::<TaskStore>();
+        let mut tasks = store.tasks.lock().unwrap();
+        let t = tasks.get_mut(&task.id).ok_or("The new document disappeared.")?;
+        t.status = Status::Done;
+        t.finished_at = Some(now_ms());
+        t.clone()
+    };
+    save_index(&app);
+    let _ = app.emit("task-update", &task);
+    Ok(task)
+}
+
+#[tauri::command]
+pub fn read_document(app: AppHandle, id: u32) -> Result<String, String> {
+    let dir = task_dir(&app, id)?;
+    match std::fs::read_to_string(Path::new(&dir).join(DOCUMENT_FILE)) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Write the Markdown. The task list is only touched when the title changes, so autosaving
+/// while typing doesn't rewrite the index or re-render every task.
+#[tauri::command]
+pub fn save_document(app: AppHandle, id: u32, content: String, title: Option<String>) -> Result<(), String> {
+    let dir = task_dir(&app, id)?;
+    std::fs::write(Path::new(&dir).join(DOCUMENT_FILE), content).map_err(|e| e.to_string())?;
+    let Some(title) = title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) else {
+        return Ok(());
+    };
+    let renamed = {
+        let store = app.state::<TaskStore>();
+        let mut tasks = store.tasks.lock().unwrap();
+        match tasks.get_mut(&id) {
+            Some(t) if t.title != title => {
+                t.title = title;
+                Some(t.clone())
+            }
+            _ => None,
+        }
+    };
+    if let Some(task) = renamed {
+        save_index(&app);
+        let _ = app.emit("task-update", &task);
+    }
+    Ok(())
+}
+
+
+/// A Chromium-based browser that can print a page to PDF without opening a window. Edge ships
+/// with Windows 10 and 11; on a Mac, Chrome, Edge or Brave.
+pub(crate) fn find_chromium() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = vec![];
+    if cfg!(target_os = "macos") {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        for name in ["Google Chrome", "Microsoft Edge", "Brave Browser", "Chromium"] {
+            let inner = Path::new("Contents").join("MacOS").join(name);
+            candidates.push(Path::new("/Applications").join(format!("{name}.app")).join(&inner));
+            if let Some(home) = &home {
+                candidates.push(home.join("Applications").join(format!("{name}.app")).join(&inner));
+            }
+        }
+    } else if cfg!(windows) {
+        for var in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+            if let Some(dir) = std::env::var_os(var).map(PathBuf::from) {
+                candidates.push(dir.join("Microsoft").join("Edge").join("Application").join("msedge.exe"));
+                candidates.push(dir.join("Google").join("Chrome").join("Application").join("chrome.exe"));
+                candidates.push(dir.join("BraveSoftware").join("Brave-Browser").join("Application").join("brave.exe"));
+            }
+        }
+    } else if let Some(path) = std::env::var_os("PATH") {
+        for name in ["google-chrome", "chromium", "chromium-browser", "microsoft-edge", "brave-browser"] {
+            candidates.extend(std::env::split_paths(&path).map(|d| d.join(name)));
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+/// File types that can be opened as documents (converted to Markdown in the UI).
+const IMPORTABLE: [&str; 6] = ["docx", "md", "markdown", "txt", "html", "htm"];
+const MAX_IMPORT_BYTES: u64 = 25 * 1024 * 1024;
+
+fn importable_ext(path: &Path) -> Result<String, String> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if IMPORTABLE.contains(&ext.as_str()) {
+        Ok(ext)
+    } else {
+        Err(format!("Jarvis can open Word, Markdown, text and HTML files, not .{ext} files."))
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedFile {
+    name: String,
+    ext: String,
+    data_base64: String,
+}
+
+/// Read a file the user picked or dropped, so the UI can turn it into Markdown.
+#[tauri::command]
+pub fn read_import(path: String) -> Result<ImportedFile, String> {
+    use base64::Engine;
+    let p = PathBuf::from(&path);
+    let ext = importable_ext(&p)?;
+    let meta = std::fs::metadata(&p).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("That isn't a file.".into());
+    }
+    if meta.len() > MAX_IMPORT_BYTES {
+        return Err("That file is larger than 25 MB.".into());
+    }
+    let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
+    let name = p.file_stem().and_then(|n| n.to_str()).unwrap_or("Document").to_string();
+    Ok(ImportedFile { name, ext, data_base64: base64::engine::general_purpose::STANDARD.encode(bytes) })
+}
+
+/// Make a document from an opened file: the converted Markdown to edit, an untouched copy of the
+/// original beside it, and a note of where it came from so edits can be saved back there.
+#[tauri::command]
+pub fn import_document(app: AppHandle, title: String, content: String, source: String, chat_id: Option<String>) -> Result<Task, String> {
+    let src = PathBuf::from(&source);
+    let ext = importable_ext(&src)?;
+    let task = new_document(app.clone(), title, chat_id)?;
+    let dir = PathBuf::from(&task.dir);
+    std::fs::write(dir.join(DOCUMENT_FILE), content).map_err(|e| e.to_string())?;
+    let _ = std::fs::copy(&src, dir.join(format!("original.{ext}")));
+    let task = {
+        let store = app.state::<TaskStore>();
+        let mut tasks = store.tasks.lock().unwrap();
+        let t = tasks.get_mut(&task.id).ok_or("The new document disappeared.")?;
+        t.source = source;
+        t.clone()
+    };
+    save_index(&app);
+    let _ = app.emit("task-update", &task);
+    Ok(task)
+}
+
+/// Write the edited document back over the file it was opened from, in that file's own format
+/// (the UI builds the bytes). Only that recorded file can be written this way, and the untouched
+/// original stays in the document's folder.
+#[tauri::command]
+pub fn save_to_source(app: AppHandle, id: u32, data_base64: String) -> Result<String, String> {
+    use base64::Engine;
+    let source = app.state::<TaskStore>().tasks.lock().unwrap().get(&id).map(|t| t.source.clone()).ok_or(format!("There is no document #{id}."))?;
+    if source.is_empty() {
+        return Err("This document wasn't opened from a file.".into());
+    }
+    let p = PathBuf::from(&source);
+    importable_ext(&p)?;
+    if !p.parent().map(Path::is_dir).unwrap_or(false) {
+        return Err("The original file's folder isn't there any more.".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data_base64).map_err(|e| e.to_string())?;
+    std::fs::write(&p, bytes).map_err(|e| e.to_string())?;
+    Ok(source)
+}
+
+/// A finished PDF ends with an %%EOF marker; until then the browser is still writing it.
+fn pdf_complete(pdf: &Path) -> Option<u64> {
+    let bytes = std::fs::read(pdf).ok()?;
+    let tail = &bytes[bytes.len().saturating_sub(64)..];
+    tail.windows(5).any(|w| w == b"%%EOF").then_some(bytes.len() as u64)
+}
+
+/// Print an HTML page to `pdf` with a headless Chromium browser, using a throwaway profile so an
+/// open browser is never touched. Some browser versions keep running after they've written the
+/// file, so rather than wait for an exit we watch for a complete PDF and then close the browser.
+async fn print_html_to_pdf(html: &str, pdf: &Path) -> Result<(), String> {
+    let browser = find_chromium().ok_or("PDF export needs Google Chrome, Microsoft Edge or Brave installed.")?;
+    let work = std::env::temp_dir().join(format!("jarvis-pdf-{}", now_ms()));
+    std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    let page = work.join("page.html");
+    std::fs::write(&page, html).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(pdf);
+    let url = tauri::Url::from_file_path(&page).map_err(|_| "Couldn't make a link to the page.".to_string())?;
+
+    let mut child = Command::new(&browser)
+        .args(["--headless", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions"])
+        // Both spellings: newer browsers use the first, older ones the second. Unknown flags are ignored.
+        .args(["--no-pdf-header-footer", "--print-to-pdf-no-header", "--use-mock-keychain"])
+        .arg(format!("--user-data-dir={}", work.join("profile").display()))
+        .arg(format!("--print-to-pdf={}", pdf.display()))
+        .arg(url.as_str())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("Couldn't start {}: {e}", browser.display()))?;
+
+    let started = std::time::Instant::now();
+    let mut last = None;
+    let done = loop {
+        let now = pdf_complete(pdf);
+        // Complete and no longer growing, or the browser has finished on its own.
+        if now.is_some() && now == last {
+            break true;
+        }
+        if let Ok(Some(_)) = child.try_wait() {
+            break pdf_complete(pdf).is_some();
+        }
+        if started.elapsed() > Duration::from_secs(60) {
+            break false;
+        }
+        last = now;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    close_browser(&mut child, &work).await;
+    let _ = std::fs::remove_dir_all(&work);
+    if done {
+        Ok(())
+    } else {
+        let _ = std::fs::remove_file(pdf);
+        Err("The browser didn't finish the PDF within a minute.".into())
+    }
+}
+
+/// Close a headless browser and every helper process it started. On Windows the helpers are its
+/// children, so the whole tree goes. Elsewhere they can outlive it, but all of them carry the
+/// throwaway profile's path, so anything still using that path is closed.
+async fn close_browser(child: &mut tokio::process::Child, work: &Path) {
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).creation_flags(CREATE_NO_WINDOW).status().await;
+    }
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+    #[cfg(not(windows))]
+    if let Some(tag) = work.file_name().and_then(|n| n.to_str()) {
+        let _ = Command::new("pkill").args(["-f", tag]).stdout(Stdio::null()).stderr(Stdio::null()).status().await;
+    }
+    #[cfg(windows)]
+    let _ = work;
+}
+
+/// Where an export may be written: an absolute path the user picked in the save dialog, with the
+/// extension the export expects, into a folder that exists.
+fn export_target(path: &str, ext: &str) -> Result<PathBuf, String> {
+    let p = PathBuf::from(path);
+    let matches = p.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case(ext)).unwrap_or(false);
+    if !p.is_absolute() || !matches || p.file_name().is_none() {
+        return Err(format!("That isn't a usable .{ext} file path."));
+    }
+    if !p.parent().map(Path::is_dir).unwrap_or(false) {
+        return Err("That folder doesn't exist.".into());
+    }
+    Ok(p)
+}
+
+/// Write an export the UI built (such as a Word file) to the path chosen in the save dialog.
+#[tauri::command]
+pub fn save_export(path: String, data_base64: String) -> Result<String, String> {
+    use base64::Engine;
+    let ext = Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if !["docx", "md", "txt", "html"].contains(&ext.as_str()) {
+        return Err("Jarvis can only save Word, Markdown, text or HTML files here.".into());
+    }
+    let target = export_target(&path, &ext)?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data_base64).map_err(|e| e.to_string())?;
+    std::fs::write(&target, bytes).map_err(|e| e.to_string())?;
+    Ok(target.display().to_string())
+}
+
+/// Print a ready-made HTML page (built by the UI from the Markdown) to the PDF path chosen in the
+/// save dialog. Works for documents and research reports alike.
+#[tauri::command]
+pub async fn export_pdf(path: String, html: String) -> Result<String, String> {
+    let target = export_target(&path, "pdf")?;
+    print_html_to_pdf(&html, &target).await?;
+    Ok(target.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exports_only_go_to_real_paths_with_the_right_type() {
+        let dir = std::env::temp_dir();
+        let ok = dir.join("Team plan.pdf");
+        assert!(export_target(ok.to_str().unwrap(), "pdf").is_ok());
+        assert!(export_target(dir.join("Team plan.PDF").to_str().unwrap(), "pdf").is_ok());
+        assert!(export_target("Team plan.pdf", "pdf").is_err(), "relative path");
+        assert!(export_target(dir.join("plan.exe").to_str().unwrap(), "pdf").is_err(), "wrong type");
+        assert!(export_target(dir.join("missing-folder-xyz").join("a.pdf").to_str().unwrap(), "pdf").is_err());
+    }
+
+    #[test]
+    fn only_documents_can_be_opened() {
+        let dir = std::env::temp_dir().join(format!("jarvis-import-test-{}", now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let md = dir.join("Plan.md");
+        std::fs::write(&md, "# Plan\n\nहेलो").unwrap();
+        let file = read_import(md.display().to_string()).unwrap();
+        assert_eq!((file.name.as_str(), file.ext.as_str()), ("Plan", "md"));
+        let exe = dir.join("tool.exe");
+        std::fs::write(&exe, "x").unwrap();
+        assert!(read_import(exe.display().to_string()).is_err());
+        assert!(read_import(dir.display().to_string() + ".docx").is_err(), "missing file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn newest_node_version_sorts_first() {
+        let mut dirs = vec![PathBuf::from("v8.17.0"), PathBuf::from("v20.19.5"), PathBuf::from("v18.2.0")];
+        dirs.sort_by_key(|p| std::cmp::Reverse(node_version(p)));
+        assert_eq!(dirs[0], PathBuf::from("v20.19.5"));
+    }
+
+    #[test]
+    fn document_worker_is_told_where_and_how_to_write() {
+        let s = Settings::default();
+        let prompt = document_prompt(&s, "Pricing memo", "Compare our three tiers", false);
+        assert!(prompt.contains(DOCUMENT_FILE) && prompt.contains("save as you go"));
+        assert!(prompt.contains("Pricing memo") && prompt.contains("Compare our three tiers"));
+        assert!(prompt.contains("don't browse the web"));
+        assert!(document_prompt(&s, "t", "b", true).contains("## Sources"));
+        let args = base_args(&s, Path::new("doc"), "deep", true);
+        assert!(args.windows(2).any(|w| w[0] == "--sandbox" && w[1] == "workspace-write"));
+        assert!(args.iter().any(|a| a == "web_search=\"live\""));
+        assert!(!base_args(&s, Path::new("doc"), "quick", false).iter().any(|a| a.contains("web_search")));
+        let edit = document_edit_prompt("shorter", false);
+        assert!(edit.contains(DOCUMENT_FILE) && edit.contains("in place"));
+    }
+
+    /// Runs the real Codex CLI the way Jarvis does: writes a document while the test watches the
+    /// file grow, then edits it and checks nothing else changed. Slow and needs a logged-in Codex:
+    /// `cargo test -- --ignored --nocapture document_worker_writes_and_edits`
+    #[test]
+    #[ignore]
+    fn document_worker_writes_and_edits() {
+        let dir = std::env::temp_dir().join(format!("jarvis-doc-smoke-{}", now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(DOCUMENT_FILE);
+        std::fs::write(&file, "").unwrap();
+        let s = Settings::default();
+        let codex = std::env::var_os("CODEX_BIN")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join(exe("codex"))).find(|p| p.is_file())))
+            .expect("codex not found; set CODEX_BIN");
+
+        // Run Codex and sample the file every 250 ms, counting how many different versions appear.
+        let run = |prompt: String, depth: &str| {
+            let mut args = base_args(&s, &dir, depth, false);
+            args.push(prompt);
+            let started = std::time::Instant::now();
+            let mut child = std::process::Command::new(&codex)
+                .args(&args)
+                .current_dir(&dir)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("codex didn't start");
+            let mut versions: Vec<usize> = vec![];
+            let mut first_save = None;
+            let status = loop {
+                let len = std::fs::read_to_string(&file).map(|t| t.len()).unwrap_or(0);
+                if len > 0 && versions.last() != Some(&len) {
+                    versions.push(len);
+                    first_save.get_or_insert(started.elapsed());
+                }
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            };
+            assert!(status.success(), "codex failed");
+            (started.elapsed(), first_save, versions)
+        };
+
+        let (took, first, versions) = run(
+            document_prompt(&s, "Kathmandu weekend", "A two-day weekend itinerary for Kathmandu: one section per day, a packing list, and a small cost table. About 300 words.", false),
+            "quick",
+        );
+        let doc = std::fs::read_to_string(&file).unwrap();
+        println!("WRITE: {took:?} total, first words on screen after {first:?}, {} saves seen, {} words", versions.len(), doc.split_whitespace().count());
+        assert!(doc.split_whitespace().count() > 120, "document is too short");
+        assert!(!doc.trim_start().starts_with("```"), "document is wrapped in a code fence");
+        assert!(!doc.contains("[1]"), "cited sources without research");
+
+        let before = doc.clone();
+        let (took, _, _) = run(document_edit_prompt("Add a short '## Tips' section at the very end with three bullets. Change nothing else.", false), "quick");
+        let after = std::fs::read_to_string(&file).unwrap();
+        println!("EDIT: {took:?}; Tips added: {}", after.contains("## Tips"));
+        assert!(after.contains("## Tips"), "edit wasn't applied");
+        assert!(after.starts_with(before.trim_end()), "edit changed text it shouldn't have");
+        println!("---\n{}\n---", after.chars().take(500).collect::<String>());
+    }
+
+    /// Prints a page to PDF with the local browser, the way the PDF button does. Pass a page built
+    /// by the app with PRINT_HTML=/path/page.html; otherwise a built-in sample is used.
+    /// `cargo test -- --ignored --nocapture pdf_export_prints`
+    #[test]
+    #[ignore]
+    fn pdf_export_prints() {
+        let html = std::env::var("PRINT_HTML")
+            .ok()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_else(|| "<!doctype html><meta charset=utf-8><h1>Sample</h1><p>नमस्ते</p>".into());
+        let out = std::env::var("PDF_OUT").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir().join("jarvis-pdf-test.pdf"));
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let started = std::time::Instant::now();
+        runtime.block_on(print_html_to_pdf(&html, &out)).expect("printing failed");
+        let bytes = std::fs::read(&out).unwrap();
+        println!("PDF: {} KB in {:?} using {}", bytes.len() / 1024, started.elapsed(), find_chromium().unwrap().display());
+        assert!(bytes.starts_with(b"%PDF"), "not a PDF");
+        assert!(bytes.windows(5).any(|w| w == b"%%EOF"), "PDF is incomplete");
+    }
 }

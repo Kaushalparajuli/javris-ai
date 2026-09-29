@@ -7,7 +7,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 use std::sync::{mpsc, Mutex};
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 const TARGET_RATE: f64 = 16_000.0;
 const CHUNK: usize = 640; // 40 ms at 16 kHz
@@ -111,6 +111,14 @@ fn pick_device(host: &cpal::Host, wanted: &str) -> Option<cpal::Device> {
 }
 
 fn build_stream(on_chunk: Channel<MicChunk>, wanted: &str) -> Result<cpal::Stream, String> {
+    open_input(wanted, move |samples: &[i16], level: f32| {
+        let _ = on_chunk.send(MicChunk { pcm: encode(samples), level });
+    })
+}
+
+/// Open the microphone and hand every 40 ms of 16 kHz mono audio to `emit`, with its level.
+/// Used by the voice session and by the wake-word listener.
+pub(crate) fn open_input(wanted: &str, mut emit: impl FnMut(&[i16], f32) + Send + 'static) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
     let device = pick_device(&host, wanted).ok_or("No microphone is connected. Plug in a headset or USB mic, connect AirPods, or pick your iPhone under System Settings → Sound → Input.")?;
     let supported = device.default_input_config().map_err(|_| "No microphone is connected. Plug in a headset or USB mic, connect AirPods, or pick your iPhone under System Settings → Sound → Input.".to_string())?;
@@ -119,10 +127,6 @@ fn build_stream(on_chunk: Channel<MicChunk>, wanted: &str) -> Result<cpal::Strea
     let config = supported.config();
     let mut rs = Resampler::new(config.sample_rate);
     let err = |e| eprintln!("microphone stream error: {e}");
-
-    let mut emit = move |samples: &[i16], level: f32| {
-        let _ = on_chunk.send(MicChunk { pcm: encode(samples), level });
-    };
 
     macro_rules! stream_of {
         ($t:ty, $to_f32:expr) => {
@@ -152,9 +156,9 @@ fn build_stream(on_chunk: Channel<MicChunk>, wanted: &str) -> Result<cpal::Strea
 }
 
 #[tauri::command]
-pub fn mic_start(state: State<'_, MicState>, on_chunk: Channel<MicChunk>, device: Option<String>) -> Result<(), String> {
+pub fn mic_start(app: AppHandle, state: State<'_, MicState>, on_chunk: Channel<MicChunk>, device: Option<String>) -> Result<(), String> {
     let wanted = device.unwrap_or_default();
-    mic_stop(state.clone());
+    stop_stream(&state);
     // cpal streams aren't Send on macOS, so each one lives on its own thread.
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
@@ -170,11 +174,18 @@ pub fn mic_start(state: State<'_, MicState>, on_chunk: Channel<MicChunk>, device
     });
     ready_rx.recv().map_err(|_| "The microphone thread stopped unexpectedly.".to_string())??;
     *state.stop.lock().unwrap() = Some(stop_tx);
+    // Jarvis is listening for real now, so the wake-word listener steps aside.
+    crate::wakeword::set_session_mic(&app, true);
     Ok(())
 }
 
 #[tauri::command]
-pub fn mic_stop(state: State<'_, MicState>) {
+pub fn mic_stop(app: AppHandle, state: State<'_, MicState>) {
+    stop_stream(&state);
+    crate::wakeword::set_session_mic(&app, false);
+}
+
+fn stop_stream(state: &MicState) {
     if let Some(tx) = state.stop.lock().unwrap().take() {
         let _ = tx.send(());
     }

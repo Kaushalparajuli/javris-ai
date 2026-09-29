@@ -11,6 +11,9 @@ pub struct Settings {
     /// Empty means "pick the newest Live model automatically".
     pub gemini_model: String,
     pub voice: String,
+    /// Language Jarvis speaks by default, as a BCP-47 code. Empty means
+    /// "match whoever is talking".
+    pub language: String,
     pub user_name: String,
     /// Empty means "look in the usual install locations".
     pub codex_path: String,
@@ -25,6 +28,14 @@ pub struct Settings {
     pub headphones: bool,
     /// Microphone name; empty means the macOS default input.
     pub mic_device: String,
+    /// Show a system notification when worker tasks finish while Jarvis isn't in front.
+    pub notify: bool,
+    /// Listen for "hey Jarvis" on this computer. Off until turned on in Settings.
+    pub wake_word: bool,
+    /// The user's own Google OAuth client (a "Desktop app" client from Google Cloud Console),
+    /// for Calendar and Gmail. Google treats desktop client secrets as not really secret.
+    pub google_client_id: String,
+    pub google_client_secret: String,
 }
 
 impl Default for Settings {
@@ -33,6 +44,7 @@ impl Default for Settings {
             gemini_api_key: String::new(),
             gemini_model: String::new(),
             voice: "Charon".into(),
+            language: String::new(),
             user_name: String::new(),
             codex_path: String::new(),
             research_dir: String::new(),
@@ -41,6 +53,10 @@ impl Default for Settings {
             web_search: true,
             headphones: false,
             mic_device: String::new(),
+            notify: true,
+            wake_word: false,
+            google_client_id: String::new(),
+            google_client_secret: String::new(),
         }
     }
 }
