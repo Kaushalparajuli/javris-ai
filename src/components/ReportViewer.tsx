@@ -3,13 +3,14 @@ import { join } from "@tauri-apps/api/path";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { safeFileName } from "../lib/exportDocx";
 import { printableHtml } from "../lib/exportPdf";
 import { askSavePath, fileNameOf } from "../lib/saveAs";
 import type { Task } from "../lib/types";
 import BrowserView from "./BrowserView";
 import ImageThumb from "./ImageThumb";
+import { hydrateImages } from "../lib/docImages";
 import PanelControls from "./PanelControls";
 
 /**
@@ -35,6 +36,11 @@ export default function ReportViewer({
   const [error, setError] = useState("");
   const [pdfNote, setPdfNote] = useState("");
   const running = task.status === "running";
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // Pictures linked from the report (saved next to it) load from the task's folder.
+  useEffect(() => {
+    if (bodyRef.current) hydrateImages(bodyRef.current, task.dir);
+  }, [html, task.dir]);
 
   useEffect(() => {
     if (task.kind === "image") return;
@@ -157,7 +163,7 @@ export default function ReportViewer({
         </div>
       ) : html ? (
         <div className="markdown" onClick={onClick}>
-          <div dangerouslySetInnerHTML={{ __html: html }} />
+          <div ref={bodyRef} dangerouslySetInnerHTML={{ __html: html }} />
           {task.kind === "browser" && task.images.length > 0 && (
             <div className="shots">
               <div className="label">Screenshots</div>

@@ -5,6 +5,7 @@ import { marked } from "marked";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { markdownToDocx, safeFileName } from "../lib/exportDocx";
 import { printableHtml } from "../lib/exportPdf";
+import { hydrateImages, inlineMarkdownImages, loadMarkdownImages, restoreImageSources } from "../lib/docImages";
 import { loadHtmlToMarkdown, textToBase64 } from "../lib/importDoc";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { askSavePath, fileNameOf } from "../lib/saveAs";
@@ -113,7 +114,7 @@ export default function DocumentEditor({ doc, tasks, micOn, onToggleMic, onWrite
     const el = richRef.current;
     const convert = toMarkdown.current;
     if (!el || !convert) return false;
-    const md = convert(el.innerHTML);
+    const md = convert(restoreImageSources(el.innerHTML));
     if (md === textRef.current) return false;
     typedHere.current = md;
     textRef.current = md;
@@ -206,8 +207,16 @@ export default function DocumentEditor({ doc, tasks, micOn, onToggleMic, onWrite
   const htmlRef = useRef(html);
   htmlRef.current = html;
   // When the formatted view appears (opening, or switching layout), fill it with the document.
+  // The HTML last put into the formatted view (before its images were loaded from disk).
+  const rendered = useRef<string | null>(null);
+  const dirRef = useRef(doc.dir);
+  dirRef.current = doc.dir;
   const setRich = useCallback((el: HTMLDivElement | null) => {
-    if (el && el !== richRef.current) el.innerHTML = htmlRef.current;
+    if (el && el !== richRef.current) {
+      el.innerHTML = htmlRef.current;
+      rendered.current = htmlRef.current;
+      hydrateImages(el, dirRef.current);
+    }
     richRef.current = el;
   }, []);
   // Changes from anywhere else (loading, Codex, the Markdown view) re-render it. Its own typing
@@ -217,7 +226,11 @@ export default function DocumentEditor({ doc, tasks, micOn, onToggleMic, onWrite
     if (!el) return;
     if (typedHere.current !== null && deferred === typedHere.current) return;
     typedHere.current = null;
-    if (el.innerHTML !== html) el.innerHTML = html;
+    if (rendered.current !== html) {
+      el.innerHTML = html;
+      rendered.current = html;
+      hydrateImages(el, doc.dir);
+    }
   }, [html]);
 
   const onRichInput = () => {
@@ -414,7 +427,7 @@ export default function DocumentEditor({ doc, tasks, micOn, onToggleMic, onWrite
       const path = await askSavePath(safeFileName(title, "docx"), { name: "Word document", ext: "docx" });
       if (!path) return;
       note("Building the Word file…");
-      const data = await markdownToDocx(title, text);
+      const data = await markdownToDocx(title, text, true, await loadMarkdownImages(text, doc.dir));
       await invoke<string>("save_export", { path, dataBase64: data });
       note(`Saved ${fileNameOf(path)}`);
     } catch (e) {
@@ -429,7 +442,7 @@ export default function DocumentEditor({ doc, tasks, micOn, onToggleMic, onWrite
       const path = await askSavePath(safeFileName(title, "pdf"), { name: "PDF", ext: "pdf" });
       if (!path) return;
       note("Making the PDF…");
-      await invoke<string>("export_pdf", { path, html: printableHtml(title, text) });
+      await invoke<string>("export_pdf", { path, html: printableHtml(title, await inlineMarkdownImages(text, doc.dir)) });
       note(`Saved ${fileNameOf(path)}`);
     } catch (e) {
       setError(`Couldn't make the PDF: ${e}`);
@@ -451,8 +464,10 @@ export default function DocumentEditor({ doc, tasks, micOn, onToggleMic, onWrite
       note(`Saving ${source.name}…`);
       const data =
         source.ext === "docx"
-          ? await markdownToDocx(title, text, false)
-          : textToBase64(source.ext === "html" || source.ext === "htm" ? printableHtml(title, text, false) : text);
+          ? await markdownToDocx(title, text, false, await loadMarkdownImages(text, doc.dir))
+          : textToBase64(
+              source.ext === "html" || source.ext === "htm" ? printableHtml(title, await inlineMarkdownImages(text, doc.dir), false) : text,
+            );
       await invoke<string>("save_to_source", { id: doc.id, dataBase64: data });
       note(`Saved to ${source.name}`);
     } catch (e) {

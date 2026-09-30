@@ -1,5 +1,6 @@
 mod briefings;
 mod browser;
+mod applog;
 mod capture;
 mod chats;
 mod google;
@@ -113,6 +114,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            applog::app_log,
             settings::get_settings,
             settings::save_settings,
             tasks::list_tasks,

@@ -16,8 +16,15 @@ const ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">
 const decode = (s: string) => s.replace(/&(?:amp|lt|gt|quot|#39);/g, (m) => ENTITIES[m] ?? m);
 
 /** A Word document for this title and Markdown, as base64 ready to hand to the backend. */
-export async function markdownToDocx(title: string, markdown: string, includeTitle = true): Promise<string> {
+export async function markdownToDocx(
+  title: string,
+  markdown: string,
+  includeTitle = true,
+  /** Local image links → data URLs, so pictures are embedded rather than listed by name. */
+  images: Map<string, string> = new Map(),
+): Promise<string> {
   const d = await import("docx");
+  const sized = await measureImages(images);
   const GREY = { type: d.ShadingType.CLEAR, fill: "F2F2F2", color: "auto" };
   const HEADINGS = [
     d.HeadingLevel.HEADING_1,
@@ -64,7 +71,19 @@ export async function markdownToDocx(title: string, markdown: string, includeTit
         }
         case "image": {
           const img = t as Tokens.Image;
-          out.push(run(`[image: ${img.text || img.href}]`, st));
+          const pic = sized.get(img.href);
+          if (pic) {
+            out.push(
+              new d.ImageRun({
+                type: pic.type,
+                data: pic.data,
+                transformation: { width: pic.width, height: pic.height },
+                altText: { name: img.text || "Image", description: img.text || "", title: img.text || "" },
+              }),
+            );
+          } else {
+            out.push(run(`[image: ${img.text || img.href}]`, st));
+          }
           break;
         }
         case "html":
@@ -209,4 +228,45 @@ export function safeFileName(title: string, ext: string) {
     .replace(/[. ]+$/, "")
     .slice(0, 80);
   return `${base || "document"}.${ext}`;
+}
+
+interface SizedImage {
+  type: "png" | "jpg" | "gif" | "bmp";
+  data: Uint8Array;
+  width: number;
+  height: number;
+}
+
+/** Decode each data URL and size it to fit the page width (about 6 inches at 96 dpi). */
+async function measureImages(images: Map<string, string>): Promise<Map<string, SizedImage>> {
+  const MAX_W = 600;
+  const out = new Map<string, SizedImage>();
+  for (const [href, url] of images) {
+    try {
+      const mime = url.slice(5, url.indexOf(";"));
+      let dataUrl = url;
+      // Word can't embed WebP, so convert it to PNG first.
+      if (mime === "image/webp") {
+        const im = new Image();
+        im.src = url;
+        await im.decode();
+        const c = document.createElement("canvas");
+        c.width = im.naturalWidth;
+        c.height = im.naturalHeight;
+        c.getContext("2d")!.drawImage(im, 0, 0);
+        dataUrl = c.toDataURL("image/png");
+      }
+      const im = new Image();
+      im.src = dataUrl;
+      await im.decode();
+      const scale = Math.min(1, MAX_W / im.naturalWidth);
+      const bin = atob(dataUrl.slice(dataUrl.indexOf(",") + 1));
+      const data = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+      const type = /jpe?g/.test(dataUrl.slice(0, 30)) ? "jpg" : "png";
+      out.set(href, { type, data, width: Math.round(im.naturalWidth * scale), height: Math.round(im.naturalHeight * scale) });
+    } catch {
+      /* unreadable image: falls back to its name */
+    }
+  }
+  return out;
 }

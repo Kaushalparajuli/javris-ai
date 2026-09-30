@@ -481,3 +481,10 @@ kbd { font: 11px var(--mono); color: var(--fg); border: 1px solid var(--line); b
   .bbar .live i, .msg, .overlay, .steps li.now i, .img-loading, .doc-status.live i, .doc-preview.streaming > div > :last-child::after, .panel { animation: none; }
   .panes > .sidebar { transition: none; }
 }
+
+/* Images inside documents, loaded from the document's folder. */
+.doc-preview img { max-width: 100%; height: auto; border-radius: 12px; display: block; margin: 12px 0; }
+.doc-preview img.doc-img-loading { min-height: 160px; width: 100%; background: linear-gradient(110deg, var(--pane) 30%, var(--raised) 50%, var(--pane) 70%); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }
+.doc-preview img.doc-img-missing { min-height: 60px; width: 100%; border: 1px dashed var(--line); background: var(--pane); }
+
+.markdown img { max-width: 100%; height: auto; border-radius: 12px; }

@@ -793,14 +793,20 @@ export function useJarvis() {
   }, []);
 
   // ---------- session ----------
+  // Bumped whenever the session is torn down (e.g. switching chats), so a connect or mic start
+  // that was still in flight can tell it is stale and back out instead of reviving the old session.
+  const epoch = useRef(0);
+
   const stopMic = useCallback(() => {
     mic.current?.stop();
     mic.current = null;
+    micOnRef.current = false;
     live.current?.sendAudioEnd();
     setMicOn(false);
   }, []);
 
   const startMic = useCallback(async () => {
+    const myEpoch = epoch.current;
     // Ask macOS first; the web view sees no microphone until the app itself is allowed.
     const allowed = await invoke<boolean>("request_mic").catch(() => true);
     if (!allowed) {
@@ -808,6 +814,7 @@ export function useJarvis() {
       setError("Jarvis isn't allowed to use the microphone. Turn on Jarvis under Privacy & Security → Microphone, then press the mic again.");
       return;
     }
+    if (myEpoch !== epoch.current) return;
     setMicBlocked(false);
     const m = new NativeMic();
     m.onChunk = (pcm) => {
@@ -820,6 +827,10 @@ export function useJarvis() {
       await m.start(micDevice.current);
     } catch (e) {
       setError(`Microphone unavailable: ${e}`);
+      return;
+    }
+    if (myEpoch !== epoch.current) {
+      m.stop();
       return;
     }
     mic.current = m;
@@ -837,6 +848,7 @@ export function useJarvis() {
   }, [settings?.micDevice]);
 
   const connect = useCallback(async () => {
+    const myEpoch = epoch.current;
     const s = await reloadSettings();
     if (!s.geminiApiKey) {
       setError("Add your Gemini API key in Settings first.");
@@ -863,11 +875,13 @@ export function useJarvis() {
     const notes = await invoke<string>("read_notes").catch(() => "");
     player.current ??= new Player();
     await player.current.resume();
+    if (myEpoch !== epoch.current) return false;
 
     const session = new LiveSession(
       { apiKey: s.geminiApiKey, model, voice: s.voice || "Charon", systemPrompt: systemPrompt(s, notes, messagesRef.current), tools: TOOLS },
       {
         onReady: () => {
+          if (live.current !== session) return;
           setConnection("live");
           setStatus(`Live · ${model}`);
           if (unsentAttachments.current.length) {
@@ -876,6 +890,7 @@ export function useJarvis() {
           }
         },
         onClosed: (reason, retry) => {
+          if (live.current !== session) return;
           console.warn("Gemini Live closed:", reason);
           if (retry) {
             setConnection("connecting");
@@ -887,15 +902,18 @@ export function useJarvis() {
           }
         },
         onAudio: (b64) => {
+          if (live.current !== session) return;
           currentUser.current = null;
           player.current?.play(b64);
         },
         onInputText: (text) => {
+          if (live.current !== session) return;
           lastUserSpeech.current = Date.now();
           if (currentUser.current == null) currentUser.current = push("you", text.trimStart());
           else append(currentUser.current, text);
         },
         onOutputText: (text) => {
+          if (live.current !== session) return;
           currentUser.current = null;
           if (currentJarvis.current == null) currentJarvis.current = push("jarvis", text.trimStart());
           else append(currentJarvis.current, text);
@@ -912,7 +930,7 @@ export function useJarvis() {
           const responses = await Promise.all(
             calls.map(async (fc) => ({ id: fc.id, name: fc.name, response: await runTool(fc) })),
           );
-          live.current?.sendToolResponses(responses);
+          if (live.current === session) session.sendToolResponses(responses);
         },
       },
     );
@@ -923,6 +941,7 @@ export function useJarvis() {
   }, [append, push, reloadSettings, runTool, shareAttachments]);
 
   const disconnect = useCallback(() => {
+    epoch.current++;
     stopMic();
     live.current?.close();
     live.current = null;
@@ -939,6 +958,7 @@ export function useJarvis() {
   const openChat = useCallback(
     async (id: string) => {
       switching.current = true;
+      const wasTalking = micOnRef.current;
       disconnect();
       const chat = await invoke<Chat | null>("load_chat", { id }).catch(() => null);
       const list = chat?.messages ?? [];
@@ -949,8 +969,13 @@ export function useJarvis() {
       setAttachments([]);
       // Let the new transcript settle before the autosave starts watching again.
       setTimeout(() => (switching.current = false), 0);
+      // Voice was on: carry on talking in the conversation just opened.
+      if (wasTalking) {
+        messagesRef.current = list;
+        if (await connect()) await startMic();
+      }
     },
-    [disconnect],
+    [disconnect, connect, startMic],
   );
 
   const createChat = useCallback(async () => {
