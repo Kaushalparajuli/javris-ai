@@ -22,10 +22,45 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const REVOKE_URL: &str = "https://oauth2.googleapis.com/revoke";
-const SCOPES: &str = "openid email \
-    https://www.googleapis.com/auth/calendar.events \
-    https://www.googleapis.com/auth/gmail.readonly \
-    https://www.googleapis.com/auth/gmail.compose";
+const AUTH: &str = "https://www.googleapis.com/auth";
+
+/// The four things Jarvis can connect to, each signed in separately so any one can be connected
+/// or removed alone (and Google never sees an odd mix of permissions in one request).
+const SERVICES: &[&str] = &["mail", "calendar", "drive", "youtube"];
+
+fn label(svc: &str) -> &'static str {
+    match svc {
+        "mail" => "Gmail",
+        "calendar" => "Google Calendar",
+        "drive" => "Google Drive, Docs and Sheets",
+        _ => "YouTube",
+    }
+}
+
+/// The permissions a service needs, space separated.
+fn scopes_for(svc: &str) -> Option<String> {
+    let list: &[&str] = match svc {
+        "mail" => &["gmail.readonly", "gmail.compose"],
+        "calendar" => &["calendar.events"],
+        "drive" => &["drive.readonly", "documents", "spreadsheets"],
+        "youtube" => &["youtube.readonly"],
+        _ => return None,
+    };
+    Some(std::iter::once("openid email".to_string()).chain(list.iter().map(|s| format!("{AUTH}/{s}"))).collect::<Vec<_>>().join(" "))
+}
+
+/// Which service an API address belongs to, so each request uses that service's sign-in.
+fn service_for_url(url: &str) -> &'static str {
+    if url.contains("gmail.googleapis.com") || url.contains("/gmail/") {
+        "mail"
+    } else if url.contains("/calendar/") {
+        "calendar"
+    } else if url.contains("youtube") {
+        "youtube"
+    } else {
+        "drive"
+    }
+}
 
 // ---------- tokens ----------
 
@@ -37,23 +72,46 @@ struct Tokens {
     /// Seconds since the epoch.
     expires_at: u64,
     email: String,
+    /// Space-separated scopes Google actually granted at sign-in.
+    scope: String,
 }
 
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-fn token_file(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_config_dir().ok().map(|d| d.join("google.json"))
+fn token_file(app: &AppHandle, svc: &str) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|d| d.join(format!("google-{svc}.json")))
 }
 
-fn load_tokens(app: &AppHandle) -> Option<Tokens> {
-    let t: Tokens = serde_json::from_str(&std::fs::read_to_string(token_file(app)?).ok()?).ok()?;
+/// Before services were separate, one `google.json` held a single sign-in. Hand it to each
+/// service it covered, once.
+fn migrate_legacy(app: &AppHandle) {
+    let Some(dir) = app.path().app_config_dir().ok() else { return };
+    let legacy = dir.join("google.json");
+    let Some(t) = std::fs::read_to_string(&legacy).ok().and_then(|x| serde_json::from_str::<Tokens>(&x).ok()) else { return };
+    if !t.refresh_token.is_empty() {
+        for svc in SERVICES {
+            let covered = if t.scope.is_empty() {
+                matches!(*svc, "mail" | "calendar")
+            } else {
+                scopes_for(svc).is_some_and(|need| need.split_whitespace().skip(2).all(|n| t.scope.contains(n)))
+            };
+            if covered && load_tokens(app, svc).is_none() {
+                let _ = save_tokens(app, svc, &t);
+            }
+        }
+    }
+    let _ = std::fs::remove_file(legacy);
+}
+
+fn load_tokens(app: &AppHandle, svc: &str) -> Option<Tokens> {
+    let t: Tokens = serde_json::from_str(&std::fs::read_to_string(token_file(app, svc)?).ok()?).ok()?;
     (!t.refresh_token.is_empty()).then_some(t)
 }
 
-fn save_tokens(app: &AppHandle, t: &Tokens) -> Result<(), String> {
-    let path = token_file(app).ok_or("No config folder available")?;
+fn save_tokens(app: &AppHandle, svc: &str, t: &Tokens) -> Result<(), String> {
+    let path = token_file(app, svc).ok_or("No config folder available")?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -66,21 +124,30 @@ fn save_tokens(app: &AppHandle, t: &Tokens) -> Result<(), String> {
     Ok(())
 }
 
+/// The Google sign-in details compiled in from .env (see build.rs). Empty when the build had none.
+const BUILT_IN_ID: &str = env!("JARVIS_GOOGLE_CLIENT_ID");
+const BUILT_IN_SECRET: &str = env!("JARVIS_GOOGLE_CLIENT_SECRET");
+
+/// The OAuth client to sign in with: the one built in from .env first, then one saved by an
+/// older version's Settings form.
 fn client_credentials(app: &AppHandle) -> Result<(String, String), String> {
+    if !BUILT_IN_ID.is_empty() {
+        return Ok((BUILT_IN_ID.to_string(), BUILT_IN_SECRET.to_string()));
+    }
     let s = settings::load(app);
     let id = s.google_client_id.trim().to_string();
     if id.is_empty() {
-        return Err("Add your Google OAuth client ID in Settings first.".into());
+        return Err("This build of Jarvis has no Google sign-in details. Put GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in the .env file next to package.json and rebuild.".into());
     }
     Ok((id, s.google_client_secret.trim().to_string()))
 }
 
-fn http() -> reqwest::Client {
+pub(crate) fn http() -> reqwest::Client {
     reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap_or_default()
 }
 
 /// Google's error message from a failed response, or the status.
-async fn failure(res: reqwest::Response) -> String {
+pub(crate) async fn failure(res: reqwest::Response) -> String {
     let status = res.status();
     let body: Value = res.json().await.unwrap_or(Value::Null);
     let msg = body["error"]["message"].as_str().or(body["error_description"].as_str()).or(body["error"].as_str()).unwrap_or("");
@@ -88,8 +155,9 @@ async fn failure(res: reqwest::Response) -> String {
 }
 
 /// A valid access token, refreshed when it's about to expire.
-async fn access_token(app: &AppHandle) -> Result<String, String> {
-    let mut t = load_tokens(app).ok_or("Google isn't connected. Connect it in Settings.")?;
+pub(crate) async fn access_token(app: &AppHandle, svc: &str) -> Result<String, String> {
+    migrate_legacy(app);
+    let mut t = load_tokens(app, svc).ok_or_else(|| format!("{} isn't connected. Connect it in Settings.", label(svc)))?;
     if t.expires_at > now() + 60 && !t.access_token.is_empty() {
         return Ok(t.access_token);
     }
@@ -102,17 +170,17 @@ async fn access_token(app: &AppHandle) -> Result<String, String> {
         .map_err(|e| format!("Couldn't reach Google: {e}"))?;
     if !res.status().is_success() {
         let why = failure(res).await;
-        return Err(format!("Google sign-in has expired or was revoked. Connect again in Settings. ({why})"));
+        return Err(format!("{} sign-in has expired or was revoked. Connect it again in Settings. ({why})", label(svc)));
     }
     let v: Value = res.json().await.map_err(|e| e.to_string())?;
     t.access_token = v["access_token"].as_str().unwrap_or("").to_string();
     t.expires_at = now() + v["expires_in"].as_u64().unwrap_or(3600);
-    save_tokens(app, &t)?;
+    save_tokens(app, svc, &t)?;
     Ok(t.access_token)
 }
 
-async fn api(app: &AppHandle, method: reqwest::Method, url: &str, body: Option<Value>) -> Result<Value, String> {
-    let token = access_token(app).await?;
+pub(crate) async fn api(app: &AppHandle, method: reqwest::Method, url: &str, body: Option<Value>) -> Result<Value, String> {
+    let token = access_token(app, service_for_url(url)).await?;
     let mut req = http().request(method, url).bearer_auth(token);
     if let Some(b) = body {
         req = req.json(&b);
@@ -122,6 +190,42 @@ async fn api(app: &AppHandle, method: reqwest::Method, url: &str, body: Option<V
         return Err(failure(res).await);
     }
     Ok(res.json().await.unwrap_or(Value::Null))
+}
+
+/// A GET whose answer is plain text (Drive exports), cut to `max_bytes` on a character boundary.
+pub(crate) async fn api_text(app: &AppHandle, url: &str, max_bytes: usize) -> Result<(String, bool), String> {
+    let token = access_token(app, service_for_url(url)).await?;
+    let res = http().get(url).bearer_auth(token).send().await.map_err(|e| format!("Couldn't reach Google: {e}"))?;
+    if !res.status().is_success() {
+        return Err(failure(res).await);
+    }
+    let mut text = res.text().await.map_err(|e| e.to_string())?;
+    let cut = text.len() > max_bytes;
+    if cut {
+        let mut end = max_bytes;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    Ok((text, cut))
+}
+
+/// A URL with its query parameters percent-encoded.
+pub(crate) fn url_with(base: &str, params: &[(&str, &str)]) -> String {
+    let mut url = tauri::Url::parse(base).expect("valid base url");
+    url.query_pairs_mut().extend_pairs(params.iter().copied());
+    url.to_string()
+}
+
+/// Turns Google's "not enough permission" answers into a plain next step.
+pub(crate) fn with_scope_hint(e: String, service: &str) -> String {
+    let l = e.to_lowercase();
+    if l.contains("insufficient") || l.contains("scope") || l.contains("has not been used") || l.contains("is disabled") {
+        format!("{e} Connect {service} again in Settings, Apps, and make sure the {service} API is enabled in your Google Cloud project.")
+    } else {
+        e
+    }
 }
 
 // ---------- sign-in ----------
@@ -141,13 +245,13 @@ fn random_state() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn auth_url(client_id: &str, redirect: &str, challenge: &str, state: &str) -> String {
+fn auth_url(client_id: &str, redirect: &str, challenge: &str, state: &str, scopes: &str) -> String {
     let mut url = tauri::Url::parse(AUTH_URL).unwrap();
     url.query_pairs_mut()
         .append_pair("client_id", client_id)
         .append_pair("redirect_uri", redirect)
         .append_pair("response_type", "code")
-        .append_pair("scope", SCOPES)
+        .append_pair("scope", scopes)
         .append_pair("code_challenge", challenge)
         .append_pair("code_challenge_method", "S256")
         .append_pair("access_type", "offline")
@@ -205,31 +309,53 @@ async fn wait_for_redirect(listener: tokio::net::TcpListener, expected_state: &s
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ServiceStatus {
+    id: String,
+    label: String,
+    connected: bool,
+    /// The account this service is signed in with.
+    email: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GoogleStatus {
     configured: bool,
+    /// Gmail or Calendar is connected (what routines and the morning briefing need).
     connected: bool,
+    /// The account of the first connected service, for "email me" steps.
     email: String,
+    services: Vec<ServiceStatus>,
 }
 
 #[tauri::command]
 pub fn google_status(app: AppHandle) -> GoogleStatus {
     let configured = client_credentials(&app).is_ok();
-    match load_tokens(&app) {
-        Some(t) => GoogleStatus { configured, connected: true, email: t.email },
-        None => GoogleStatus { configured, connected: false, email: String::new() },
-    }
+    migrate_legacy(&app);
+    let services: Vec<ServiceStatus> = SERVICES
+        .iter()
+        .map(|svc| {
+            let t = load_tokens(&app, svc);
+            ServiceStatus { id: svc.to_string(), label: label(svc).into(), connected: t.is_some(), email: t.map(|t| t.email).unwrap_or_default() }
+        })
+        .collect();
+    let email = services.iter().filter(|s| s.connected && (s.id == "mail" || s.id == "calendar")).map(|s| s.email.clone()).find(|e| !e.is_empty()).unwrap_or_default();
+    let connected = services.iter().any(|s| s.connected && (s.id == "mail" || s.id == "calendar"));
+    GoogleStatus { configured, connected, email, services }
 }
 
-/// Sign in to Google in the system browser and keep the tokens. Returns the account's email.
+/// Sign in to one Google service ("mail", "calendar", "drive" or "youtube") in the system
+/// browser and keep its tokens. Returns the account's email.
 #[tauri::command]
-pub async fn google_connect(app: AppHandle) -> Result<String, String> {
+pub async fn google_connect(app: AppHandle, service: String) -> Result<String, String> {
+    let scopes = scopes_for(&service).ok_or("Unknown Google service.")?;
     let (client_id, secret) = client_credentials(&app)?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let redirect = format!("http://127.0.0.1:{port}");
     let (verifier, challenge) = pkce();
     let state = random_state();
-    app.opener().open_url(auth_url(&client_id, &redirect, &challenge, &state), None::<&str>).map_err(|e| format!("Couldn't open the browser: {e}"))?;
+    app.opener().open_url(auth_url(&client_id, &redirect, &challenge, &state, &scopes), None::<&str>).map_err(|e| format!("Couldn't open the browser: {e}"))?;
 
     let code = wait_for_redirect(listener, &state).await?;
     let res = http()
@@ -254,6 +380,7 @@ pub async fn google_connect(app: AppHandle) -> Result<String, String> {
         access_token: v["access_token"].as_str().unwrap_or("").to_string(),
         expires_at: now() + v["expires_in"].as_u64().unwrap_or(3600),
         email: String::new(),
+        scope: v["scope"].as_str().unwrap_or("").to_string(),
     };
     if tokens.refresh_token.is_empty() {
         return Err("Google didn't grant lasting access. Remove Jarvis at myaccount.google.com/permissions and connect again.".into());
@@ -264,17 +391,24 @@ pub async fn google_connect(app: AppHandle) -> Result<String, String> {
         let v: Value = r.json().await.unwrap_or(Value::Null);
         tokens.email = v["email"].as_str().unwrap_or("").to_string();
     }
-    save_tokens(&app, &tokens)?;
+    save_tokens(&app, &service, &tokens)?;
     Ok(tokens.email)
 }
 
-/// Revoke Jarvis's access at Google and forget the tokens.
+/// Remove one service's access: revoke it at Google (unless another service still uses the same
+/// grant, as after an upgrade from the single sign-in) and forget its tokens.
 #[tauri::command]
-pub async fn google_disconnect(app: AppHandle) -> Result<(), String> {
-    if let Some(t) = load_tokens(&app) {
-        let _ = http().post(REVOKE_URL).form(&[("token", t.refresh_token.as_str())]).send().await;
+pub async fn google_disconnect(app: AppHandle, service: String) -> Result<(), String> {
+    if scopes_for(&service).is_none() {
+        return Err("Unknown Google service.".into());
     }
-    if let Some(path) = token_file(&app) {
+    if let Some(t) = load_tokens(&app, &service) {
+        let shared = SERVICES.iter().filter(|s| **s != service).any(|s| load_tokens(&app, s).is_some_and(|o| o.refresh_token == t.refresh_token));
+        if !shared {
+            let _ = http().post(REVOKE_URL).form(&[("token", t.refresh_token.as_str())]).send().await;
+        }
+    }
+    if let Some(path) = token_file(&app, &service) {
         let _ = std::fs::remove_file(path);
     }
     Ok(())
@@ -293,8 +427,13 @@ pub struct Event {
     all_day: bool,
     location: String,
     attendees: usize,
+    /// Guests' email addresses, for editing.
+    attendee_emails: Vec<String>,
+    description: String,
     link: String,
     meet: String,
+    /// One occurrence of a repeating event: changes and deletes apply to this one only.
+    recurring: bool,
 }
 
 fn event_from(v: &Value) -> Event {
@@ -307,6 +446,12 @@ fn event_from(v: &Value) -> Event {
         all_day: v["start"]["date"].is_string(),
         location: v["location"].as_str().unwrap_or("").into(),
         attendees: v["attendees"].as_array().map(|a| a.len()).unwrap_or(0),
+        attendee_emails: v["attendees"]
+            .as_array()
+            .map(|a| a.iter().filter(|x| x["self"] != true && x["resource"] != true).filter_map(|x| x["email"].as_str().map(String::from)).collect())
+            .unwrap_or_default(),
+        description: v["description"].as_str().unwrap_or("").into(),
+        recurring: v["recurringEventId"].is_string(),
         link: v["htmlLink"].as_str().unwrap_or("").into(),
         meet: v["hangoutLink"].as_str().unwrap_or("").into(),
     }
@@ -340,18 +485,34 @@ pub struct NewEvent {
     location: String,
     #[serde(default)]
     description: String,
+    /// A whole-day event: `start` and `end` are dates ("YYYY-MM-DD"), and `end` is the day after.
+    #[serde(default)]
+    all_day: bool,
+}
+
+/// Google's start or end object for a time, whole-day or not.
+fn when_json(t: &str, all_day: bool, zone: &str) -> Value {
+    if all_day {
+        json!({ "date": &t[..t.len().min(10)], "dateTime": null })
+    } else {
+        let t = if t.len() == 16 { format!("{t}:00") } else { t.to_string() };
+        json!({ "dateTime": t, "timeZone": zone, "date": null })
+    }
 }
 
 /// Create an event. When it has attendees Google emails them invitations, so the UI confirms
 /// with the user before calling this.
 #[tauri::command]
 pub async fn calendar_create(app: AppHandle, event: NewEvent) -> Result<Event, String> {
-    let seconds = |t: &str| if t.len() == 16 { format!("{t}:00") } else { t.to_string() };
     let mut body = json!({
         "summary": event.title,
-        "start": { "dateTime": seconds(&event.start), "timeZone": event.time_zone },
-        "end": { "dateTime": seconds(&event.end), "timeZone": event.time_zone },
+        "start": when_json(&event.start, event.all_day, &event.time_zone),
+        "end": when_json(&event.end, event.all_day, &event.time_zone),
     });
+    // A new event has nothing to clear, so drop the nulls that only matter when editing.
+    for k in ["start", "end"] {
+        body[k].as_object_mut().map(|o| o.retain(|_, v| !v.is_null()));
+    }
     if !event.location.is_empty() {
         body["location"] = json!(event.location);
     }
@@ -367,6 +528,89 @@ pub async fn calendar_create(app: AppHandle, event: NewEvent) -> Result<Event, S
         if invite { "all" } else { "none" }
     );
     Ok(event_from(&api(&app, reqwest::Method::POST, &url, Some(body)).await?))
+}
+
+/// Event ids go into the request path, so only the characters Google uses are allowed.
+fn event_url(id: &str) -> Result<String, String> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || "_-.@".contains(c)) {
+        return Err("That isn't a valid event id.".into());
+    }
+    Ok(format!("https://www.googleapis.com/calendar/v3/calendars/primary/events/{id}"))
+}
+
+/// One event, in full.
+#[tauri::command]
+pub async fn calendar_get(app: AppHandle, id: String) -> Result<Event, String> {
+    let url = event_url(&id)?;
+    Ok(event_from(&api(&app, reqwest::Method::GET, &url, None).await?))
+}
+
+/// Changes to an event. Anything left out stays as it is.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventPatch {
+    title: Option<String>,
+    /// New start and end go together, as local date-times (or dates when `all_day`).
+    start: Option<String>,
+    end: Option<String>,
+    all_day: Option<bool>,
+    time_zone: Option<String>,
+    location: Option<String>,
+    description: Option<String>,
+    /// The full guest list after the change. Guests who stay keep their replies.
+    attendees: Option<Vec<String>>,
+    /// Email the guests about the change.
+    #[serde(default)]
+    notify: bool,
+}
+
+/// Change an event. Guests are emailed only when `notify` is set, which the UI confirms first.
+#[tauri::command]
+pub async fn calendar_update(app: AppHandle, id: String, patch: EventPatch) -> Result<Event, String> {
+    let url = event_url(&id)?;
+    let mut body = json!({});
+    if let Some(t) = &patch.title {
+        body["summary"] = json!(t);
+    }
+    if let Some(l) = &patch.location {
+        body["location"] = json!(l);
+    }
+    if let Some(d) = &patch.description {
+        body["description"] = json!(d);
+    }
+    if let (Some(start), Some(end)) = (&patch.start, &patch.end) {
+        let all_day = patch.all_day.unwrap_or(false);
+        let zone = patch.time_zone.clone().unwrap_or_default();
+        body["start"] = when_json(start, all_day, &zone);
+        body["end"] = when_json(end, all_day, &zone);
+    } else if patch.start.is_some() || patch.end.is_some() {
+        return Err("Change the start and the end together.".into());
+    }
+    if let Some(wanted) = &patch.attendees {
+        // Keep the people who are already invited as they are; add or drop the rest.
+        let current = api(&app, reqwest::Method::GET, &url, None).await?;
+        let existing = current["attendees"].as_array().cloned().unwrap_or_default();
+        let mut list: Vec<Value> = existing
+            .into_iter()
+            .filter(|a| a["self"] == true || a["resource"] == true || a["email"].as_str().is_some_and(|e| wanted.iter().any(|w| w.eq_ignore_ascii_case(e))))
+            .collect();
+        for email in wanted {
+            if !list.iter().any(|a| a["email"].as_str().is_some_and(|e| e.eq_ignore_ascii_case(email))) {
+                list.push(json!({ "email": email }));
+            }
+        }
+        body["attendees"] = json!(list);
+    }
+    let url = format!("{url}?sendUpdates={}", if patch.notify { "all" } else { "none" });
+    Ok(event_from(&api(&app, reqwest::Method::PATCH, &url, Some(body)).await?))
+}
+
+/// Delete an event. Guests are emailed the cancellation only when `notify` is set.
+#[tauri::command]
+pub async fn calendar_delete(app: AppHandle, id: String, notify: bool) -> Result<(), String> {
+    let url = format!("{}?sendUpdates={}", event_url(&id)?, if notify { "all" } else { "none" });
+    api(&app, reqwest::Method::DELETE, &url, None).await?;
+    Ok(())
 }
 
 // ---------- mail ----------
@@ -398,7 +642,7 @@ fn header(v: &Value, name: &str) -> String {
 #[tauri::command]
 pub async fn mail_search(app: AppHandle, query: String, max: Option<u32>) -> Result<Vec<MailSummary>, String> {
     let mut url = tauri::Url::parse(&format!("{GMAIL}/messages")).unwrap();
-    url.query_pairs_mut().append_pair("q", &query).append_pair("maxResults", &max.unwrap_or(8).clamp(1, 20).to_string());
+    url.query_pairs_mut().append_pair("q", &query).append_pair("maxResults", &max.unwrap_or(8).clamp(1, 50).to_string());
     let list = api(&app, reqwest::Method::GET, url.as_str(), None).await?;
     let ids: Vec<String> = list["messages"].as_array().map(|a| a.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect()).unwrap_or_default();
     let fetches = ids.iter().map(|id| {
@@ -569,6 +813,26 @@ pub async fn mail_send_draft(app: AppHandle, draft_id: String) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn times_and_whole_days_become_google_json() {
+        let t = super::when_json("2026-10-05T15:00", false, "Asia/Kathmandu");
+        assert_eq!(t["dateTime"], "2026-10-05T15:00:00");
+        assert_eq!(t["timeZone"], "Asia/Kathmandu");
+        assert!(t["date"].is_null());
+        let d = super::when_json("2026-10-05", true, "Asia/Kathmandu");
+        assert_eq!(d["date"], "2026-10-05");
+        assert!(d["dateTime"].is_null());
+    }
+
+    #[test]
+    fn event_ids_cannot_escape_the_path() {
+        assert!(super::event_url("abc123_20261001T090000Z").is_ok());
+        assert!(super::event_url("../calendars").is_err());
+        assert!(super::event_url("a/b").is_err());
+        assert!(super::event_url("a?x=1").is_err());
+        assert!(super::event_url("").is_err());
+    }
+
     use super::*;
 
     #[test]
@@ -581,10 +845,32 @@ mod tests {
 
     #[test]
     fn the_consent_page_asks_for_offline_access_with_pkce() {
-        let url = auth_url("abc.apps.googleusercontent.com", "http://127.0.0.1:5555", "CHAL", "ST");
-        for part in ["client_id=abc.apps", "redirect_uri=http%3A%2F%2F127.0.0.1%3A5555", "code_challenge=CHAL", "code_challenge_method=S256", "access_type=offline", "state=ST", "gmail.compose", "calendar.events"] {
+        let url = auth_url("abc.apps.googleusercontent.com", "http://127.0.0.1:5555", "CHAL", "ST", &scopes_for("mail").unwrap());
+        for part in ["client_id=abc.apps", "redirect_uri=http%3A%2F%2F127.0.0.1%3A5555", "code_challenge=CHAL", "code_challenge_method=S256", "access_type=offline", "state=ST", "gmail.compose"] {
             assert!(url.contains(part), "missing {part} in {url}");
         }
+    }
+
+    #[test]
+    fn each_service_asks_only_for_its_own_permissions() {
+        assert!(scopes_for("youtube").unwrap().contains("youtube.readonly"));
+        assert!(!scopes_for("youtube").unwrap().contains("drive"));
+        assert!(scopes_for("drive").unwrap().contains("spreadsheets"));
+        assert!(!scopes_for("calendar").unwrap().contains("gmail"));
+        assert!(scopes_for("nope").is_none());
+        for svc in SERVICES {
+            assert!(scopes_for(svc).unwrap().starts_with("openid email "), "{svc}");
+        }
+    }
+
+    #[test]
+    fn requests_use_the_matching_services_sign_in() {
+        assert_eq!(service_for_url("https://gmail.googleapis.com/gmail/v1/users/me/messages"), "mail");
+        assert_eq!(service_for_url("https://www.googleapis.com/calendar/v3/calendars/primary/events"), "calendar");
+        assert_eq!(service_for_url("https://www.googleapis.com/youtube/v3/search?q=x"), "youtube");
+        assert_eq!(service_for_url("https://docs.googleapis.com/v1/documents"), "drive");
+        assert_eq!(service_for_url("https://sheets.googleapis.com/v4/spreadsheets"), "drive");
+        assert_eq!(service_for_url("https://www.googleapis.com/drive/v3/files"), "drive");
     }
 
     #[test]

@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { confirm } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
+import { DEFAULT_RULE, RISK_INFO, ruleFor, type Risk, type Rule } from "../lib/approvals";
 import { LANGUAGES } from "../lib/languages";
 import { listLiveModels } from "../lib/live";
 import type { CodexModels, CodexStatus, MicDevice, Settings } from "../lib/types";
@@ -18,6 +21,17 @@ const LEVEL_NAMES: Record<string, string> = {
 };
 const levelName = (l: string) => LEVEL_NAMES[l] ?? l;
 
+/** The sections down the left. `words` are what the search box also matches. */
+const NAV = [
+  { id: "general", label: "General", words: "name call you notifications notify", icon: "M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7zm0 2a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM10.7 2h2.6l.5 2.4 1.7.7 2.1-1.3 1.8 1.8-1.3 2.1.7 1.7 2.4.5v2.6l-2.4.5-.7 1.7 1.3 2.1-1.8 1.8-2.1-1.3-1.7.7-.5 2.4h-2.6l-.5-2.4-1.7-.7-2.1 1.3-1.8-1.8 1.3-2.1-.7-1.7L2 13.3v-2.6l2.4-.5.7-1.7-1.3-2.1 1.8-1.8 2.1 1.3 1.7-.7z" },
+  { id: "voice", label: "Voice", words: "gemini api key model language speak nepali english hindi", icon: "M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3zm-5 8h2a3 3 0 0 0 6 0h2a5 5 0 0 1-4 4.9V19h-2v-3.1A5 5 0 0 1 7 11z" },
+  { id: "mic", label: "Microphone", words: "mic headphones hey jarvis wake word listen input", icon: "M5 10h2v4H5zm4-4h2v12H9zm4 2h2v8h-2zm4 2h2v4h-2z" },
+  { id: "research", label: "Research", words: "codex model thinking folder web search worker", icon: "M10.5 3a7.5 7.5 0 0 1 5.9 12.1l4.3 4.3-1.4 1.4-4.3-4.3A7.5 7.5 0 1 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z" },
+  { id: "google", label: "Apps", words: "google gmail calendar mail drive docs sheets youtube connect account sign in integrations", icon: "M3 5h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm1 2v.5l8 5 8-5V7zm16 2.9-8 5-8-5V17h16z" },
+  { id: "browser", label: "Browser", words: "chrome playwright websites tasks profile", icon: "M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zm0 2a7 7 0 1 0 0 14 7 7 0 0 0 0-14zm-1 2h2v5h-2zm0 7h2v2h-2z" },
+  { id: "screen", label: "Screen & approvals", words: "accessibility screen recording permission approve ask never audit write send", icon: "M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5zm0 2.1 6 2.2V11c0 3.9-2.5 7.6-6 8.9-3.5-1.3-6-5-6-8.9V6.3zM11 8h2v5h-2zm0 6h2v2h-2z" },
+];
+
 export default function SettingsPanel({ initial, onClose, onSaved }: { initial: Settings; onClose: () => void; onSaved: () => void }) {
   const [s, setS] = useState<Settings>(initial);
   const [models, setModels] = useState<string[]>([]);
@@ -27,26 +41,39 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
   const [installing, setInstalling] = useState(false);
   const [installMsg, setInstallMsg] = useState("");
   const triedInstall = useRef(false);
+  const [tab, setTab] = useState("general");
+  const [search, setSearch] = useState("");
+  const [trusted, setTrusted] = useState<boolean | null>(null);
+  const [screenOk, setScreenOk] = useState<boolean | null>(null);
+  const checkTrusted = () =>
+    invoke<{ trusted: boolean; screen: boolean }>("context_status")
+      .then((r) => {
+        setTrusted(r.trusted);
+        setScreenOk(r.screen);
+      })
+      .catch(() => {
+        setTrusted(false);
+        setScreenOk(false);
+      });
+  const setRule = (risk: Risk, rule: Rule) => setS((x) => ({ ...x, approvals: { ...(x.approvals ?? {}), [risk]: rule } }));
   const [codexModels, setCodexModels] = useState<CodexModels | null>(null);
-  const [google, setGoogle] = useState<{ configured: boolean; connected: boolean; email: string } | null>(null);
-  const [googleBusy, setGoogleBusy] = useState(false);
+  const [google, setGoogle] = useState<{ configured: boolean; connected: boolean; email: string; services: { id: string; label: string; connected: boolean; email: string }[] } | null>(null);
+  const [googleBusy, setGoogleBusy] = useState("");
   const [googleError, setGoogleError] = useState("");
   const loadGoogle = () => invoke<typeof google>("google_status").then(setGoogle).catch(() => {});
-  const connectGoogle = async () => {
+  const connectGoogle = async (service: string) => {
     setGoogleError("");
-    setGoogleBusy(true);
+    setGoogleBusy(service);
     try {
-      // Sign-in reads the client ID from saved settings, so save first.
-      await invoke("save_settings", { settings: s });
-      await invoke<string>("google_connect");
+      await invoke<string>("google_connect", { service });
     } catch (e) {
       setGoogleError(String(e));
     }
-    setGoogleBusy(false);
+    setGoogleBusy("");
     loadGoogle();
   };
-  const disconnectGoogle = async () => {
-    await invoke("google_disconnect").catch((e) => setGoogleError(String(e)));
+  const disconnectGoogle = async (service: string) => {
+    await invoke("google_disconnect", { service }).catch((e) => setGoogleError(String(e)));
     loadGoogle();
   };
   const [browser, setBrowser] = useState<{ installed: boolean; browser: string; message: string } | null>(null);
@@ -98,6 +125,28 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
     setInstallMsg("");
   };
 
+  // Signing in to Codex with a ChatGPT account, right here.
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginLines, setLoginLines] = useState<string[]>([]);
+  const [loginDevice, setLoginDevice] = useState(false);
+  const loginLink = loginLines.map((l) => l.match(/https?:\/\/\S+/)?.[0]).find(Boolean);
+  const signIn = async (device = false) => {
+    setLoginBusy(true);
+    setLoginDevice(device);
+    setLoginLines([]);
+    try {
+      await applyStatus(await invoke<CodexStatus>("codex_login", { device }));
+    } catch (e) {
+      setCodex((c) => (c ? { ...c, message: `Sign-in failed: ${e}` } : c));
+    }
+    setLoginBusy(false);
+  };
+  const signOut = async () => {
+    if (!(await confirm("Research and code fixes stop working until you sign in again.", { title: "Sign out of Codex?", kind: "warning", okLabel: "Sign out" }))) return;
+    setCodexModels(null);
+    await applyStatus(await invoke<CodexStatus>("codex_logout"));
+  };
+
   const checkCodex = async (autoInstall = false) => {
     setChecking(true);
     const status = await invoke<CodexStatus>("codex_status");
@@ -132,9 +181,14 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
     loadMics();
     loadBrowser();
     loadGoogle();
+    checkTrusted();
+    window.addEventListener("focus", checkTrusted);
     const un = listen<string>("codex-install", (e) => setInstallMsg(e.payload));
+    const unLogin = listen<string>("codex-login", (e) => setLoginLines((l) => [...l, e.payload].slice(-6)));
     return () => {
       un.then((f) => f());
+      unLogin.then((f) => f());
+      window.removeEventListener("focus", checkTrusted);
     };
   }, []);
 
@@ -145,23 +199,71 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
       await invoke("wake_word_set", { enabled: !!s.wakeWord });
       setSaved("Saved");
       onSaved();
+      onClose();
     } catch (e) {
       setSaved(`Could not save: ${e}`);
     }
   };
 
+  const q = search.trim().toLowerCase();
+  const matches = (n: (typeof NAV)[number]) => !q || `${n.label} ${n.words}`.toLowerCase().includes(q);
+  const found = NAV.filter(matches);
+  /** With a search, every matching section shows; otherwise just the chosen one. */
+  const show = (id: string) => (q ? found.some((n) => n.id === id) : tab === id);
+  const title = q ? (found.length ? "Search results" : "Nothing found") : NAV.find((n) => n.id === tab)?.label;
+
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="settings glass" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Settings">
-        <header>
-          <h2>Settings</h2>
-          <button className="mini" onClick={onClose}>
-            Close
-          </button>
-        </header>
+      <div className="settings settings-nav glass" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Settings">
+        <nav className="snav" aria-label="Settings sections">
+          <label className="snav-search">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M10.5 3a7.5 7.5 0 0 1 5.9 12.1l4.3 4.3-1.4 1.4-4.3-4.3A7.5 7.5 0 1 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z" />
+            </svg>
+            <input type="search" placeholder="Search" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search settings" />
+          </label>
+          <div className="snav-group">Settings</div>
+          {NAV.map((n) => (
+            <button
+              key={n.id}
+              type="button"
+              className={`snav-item ${!q && tab === n.id ? "on" : ""} ${q && !matches(n) ? "dim" : ""}`}
+              aria-current={!q && tab === n.id ? "page" : undefined}
+              onClick={() => {
+                setTab(n.id);
+                setSearch("");
+              }}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d={n.icon} />
+              </svg>
+              {n.label}
+            </button>
+          ))}
+        </nav>
 
-        <section>
-          <div className="label">Voice · Gemini Live</div>
+        <div className="spane">
+          <header>
+            <h2>{title}</h2>
+            <button className="icon-btn" onClick={onClose} aria-label="Close settings" title="Close">
+              <svg viewBox="0 0 24 24">
+                <path d="m6.4 5 5.6 5.6L17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4z" />
+              </svg>
+            </button>
+          </header>
+
+          <div className="settings-body">
+          <section hidden={!show("general")}>
+            {q && <div className="label">{NAV.find((n) => n.id === "general")?.label}</div>}
+          <label htmlFor="name">What should Jarvis call you?</label>
+          <input id="name" value={s.userName} placeholder="e.g. Kaushal" onChange={(e) => set("userName", e.target.value)} />
+          <label className="check">
+            <input id="notify" type="checkbox" checked={s.notify ?? true} onChange={(e) => set("notify", e.target.checked)} />
+            Notify me when work finishes while Jarvis isn't in front
+          </label>
+          </section>
+          <section hidden={!show("voice")}>
+            {q && <div className="label">{NAV.find((n) => n.id === "voice")?.label}</div>}
           <label htmlFor="key">Gemini API key</label>
           <input
             id="key"
@@ -203,10 +305,13 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
           </select>
           <p className="hint">
             {s.language
-              ? "Jarvis opens in this language and switches if you speak another one."
+              ? "Jarvis speaks only this language, even if your speech sounds like another. Ask it in words to switch."
               : "Jarvis replies in whatever language you speak to it."}
           </p>
           {modelMsg && <p className="hint">{modelMsg}</p>}
+          </section>
+          <section hidden={!show("mic")}>
+            {q && <div className="label">{NAV.find((n) => n.id === "mic")?.label}</div>}
           <label htmlFor="mic">Microphone</label>
           <div className="inline">
             <select id="mic" value={s.micDevice} onChange={(e) => set("micDevice", e.target.value)}>
@@ -238,12 +343,9 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
             I'm using headphones (interrupt Jarvis by talking)
           </label>
           <p className="hint">Without headphones, Jarvis stops listening while it speaks so it doesn't hear itself. Press ⌥. to cut it off.</p>
-          <label htmlFor="name">What should Jarvis call you?</label>
-          <input id="name" value={s.userName} placeholder="e.g. Kaushal" onChange={(e) => set("userName", e.target.value)} />
-        </section>
-
-        <section>
-          <div className="label">Research worker · Codex</div>
+          </section>
+          <section hidden={!show("research")}>
+            {q && <div className="label">{NAV.find((n) => n.id === "research")?.label}</div>}
           <div className={`status-line ${codex?.loggedIn ? "ok" : "bad"}`}>
             <i />
             <span>
@@ -251,21 +353,60 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
                 ? installMsg || "Installing Codex…"
                 : checking
                   ? "Checking Codex…"
-                  : codex
-                    ? codex.loggedIn
-                      ? `Ready · ${codex.version} · ${codex.path}`
-                      : codex.message
-                    : "Not checked"}
+                  : loginBusy
+                    ? "Waiting for you to finish signing in…"
+                    : codex
+                      ? codex.loggedIn
+                        ? `${codex.message || "Signed in"} · Codex ${codex.version.replace(/^codex-cli\s*/i, "")}`
+                        : codex.found
+                          ? "Not signed in to ChatGPT"
+                          : codex.message
+                      : "Not checked"}
             </span>
             {codex && !codex.found && !installing && (
               <button className="mini" onClick={installCodex}>
                 Install
               </button>
             )}
-            <button className="mini" onClick={() => checkCodex()} disabled={checking || installing}>
+            {codex?.found && !codex.loggedIn && !loginBusy && (
+              <button className="btn primary" onClick={() => signIn(false)} disabled={checking || installing}>
+                Sign in with ChatGPT
+              </button>
+            )}
+            {loginBusy && (
+              <button className="mini" onClick={() => invoke("codex_login_cancel")}>
+                Cancel
+              </button>
+            )}
+            {codex?.loggedIn && (
+              <button className="mini" onClick={signOut}>
+                Sign out
+              </button>
+            )}
+            <button className="mini" onClick={() => checkCodex()} disabled={checking || installing || loginBusy}>
               Check again
             </button>
           </div>
+          {codex?.found && !codex.loggedIn && !loginBusy && (
+            <>
+              <p className="hint">Research and code fixes run on your ChatGPT plan (Plus, Pro, Business or Enterprise). A ChatGPT sign-in page opens in your browser; Jarvis never sees your password.</p>
+              {codex.message && !codex.message.startsWith("Not signed in") && <p className="hint warn">{codex.message}</p>}
+              <button className="linkbtn" onClick={() => signIn(true)}>
+                Browser not opening? Sign in with a code instead
+              </button>
+            </>
+          )}
+          {loginBusy && (
+            <div className="loginbox">
+              <p className="hint">{loginDevice ? "Open the page below on any device and enter the code shown." : "Finish signing in in your browser, then come back here."}</p>
+              {loginLink && (
+                <button className="linkbtn" onClick={() => openUrl(loginLink).catch(() => {})}>
+                  Open the sign-in page
+                </button>
+              )}
+              {loginDevice && loginLines.length > 0 && <pre className="approval-detail">{loginLines.join("\n")}</pre>}
+            </div>
+          )}
           <label htmlFor="codexPath">Codex path (optional)</label>
           <input id="codexPath" value={s.codexPath} placeholder="Found automatically, e.g. /opt/homebrew/bin/codex" onChange={(e) => set("codexPath", e.target.value)} />
           <div className="row">
@@ -310,61 +451,39 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
             <input id="web" type="checkbox" checked={s.webSearch} onChange={(e) => set("webSearch", e.target.checked)} />
             Let Codex search the web
           </label>
-          <label className="check">
-            <input id="notify" type="checkbox" checked={s.notify ?? true} onChange={(e) => set("notify", e.target.checked)} />
-            Notify me when work finishes while Jarvis isn't in front
-          </label>
-        </section>
-
-        <section>
-          <div className="label">Google · Calendar and Gmail</div>
-          <div className={`status-line ${google?.connected ? "ok" : "bad"}`}>
-            <i />
-            <span>
-              {googleBusy
-                ? "Finish signing in in your browser…"
-                : google?.connected
-                  ? `Connected${google.email ? ` as ${google.email}` : ""}`
-                  : s.googleClientId?.trim()
-                    ? "Not connected"
-                    : "Add your Google client ID below, then connect"}
-            </span>
-            {google?.connected ? (
-              <button className="mini" onClick={disconnectGoogle}>
-                Disconnect
-              </button>
-            ) : (
-              <button className="mini" onClick={connectGoogle} disabled={!s.googleClientId?.trim() || googleBusy}>
-                Connect
-              </button>
-            )}
-          </div>
+          </section>
+          <section hidden={!show("google")}>
+            {q && <div className="label">{NAV.find((n) => n.id === "google")?.label}</div>}
+          <div className="label">Google</div>
+          {google && !google.configured && <p className="hint warn">Google sign-in isn't set up in this build (see .env).</p>}
+          {(google?.services ?? []).map((svc) => (
+            <div key={svc.id} className={`status-line ${svc.connected ? "ok" : "bad"}`}>
+              <i />
+              <span>
+                <b>{svc.label}</b>
+                {" · "}
+                {googleBusy === svc.id ? "Finish signing in in your browser…" : svc.connected ? `Connected${svc.email ? ` as ${svc.email}` : ""}` : "Not connected"}
+              </span>
+              {svc.connected ? (
+                <button className="mini" onClick={() => disconnectGoogle(svc.id)}>
+                  Disconnect
+                </button>
+              ) : (
+                <button className="mini" onClick={() => connectGoogle(svc.id)} disabled={!google?.configured || !!googleBusy}>
+                  Connect
+                </button>
+              )}
+            </div>
+          ))}
           {googleError && <p className="hint warn">{googleError}</p>}
-          <label htmlFor="gid">Client ID</label>
-          <input id="gid" value={s.googleClientId ?? ""} placeholder="…apps.googleusercontent.com" onChange={(e) => set("googleClientId", e.target.value.trim())} />
-          <label htmlFor="gsecret">Client secret</label>
-          <input id="gsecret" type="password" value={s.googleClientSecret ?? ""} placeholder="GOCSPX-…" onChange={(e) => set("googleClientSecret", e.target.value.trim())} />
-          <details className="setup">
-            <summary>How to get these (once, about five minutes)</summary>
-            <ol>
-              <li>Open console.cloud.google.com and create a project, or pick one.</li>
-              <li>Under APIs &amp; Services → Library, enable the Gmail API and the Google Calendar API.</li>
-              <li>
-                Under APIs &amp; Services → OAuth consent screen, name the app “Jarvis”. Choose Internal if you use Google Workspace. Otherwise choose External and add your
-                own address as a test user; in that case Google asks you to connect again about once a week.
-              </li>
-              <li>Under APIs &amp; Services → Credentials, create an OAuth client ID with the type Desktop app.</li>
-              <li>Paste its client ID and secret here, then press Connect and approve access in your browser.</li>
-            </ol>
-          </details>
           <p className="hint">
-            Jarvis can read your calendar and mail and write drafts. It never sends an email or invites anyone until you confirm it on screen. Access stays on this computer;
-            Disconnect removes it at Google too.
+            Each app is connected on its own, so you only give Jarvis what you want it to use: mail and calendar, files in Drive with Docs and Sheets, or YouTube search. It never sends an
+            email, invites anyone or changes a file until you confirm it on screen. Access stays on this computer; Disconnect removes it at Google too. Other providers can be added here
+            later.
           </p>
-        </section>
-
-        <section>
-          <div className="label">Browser · for browser tasks</div>
+          </section>
+          <section hidden={!show("browser")}>
+            {q && <div className="label">{NAV.find((n) => n.id === "browser")?.label}</div>}
           <div className={`status-line ${browser?.installed ? "ok" : "bad"}`}>
             <i />
             <span>{browserBusy ? "Setting up the browser tools…" : browser?.message ?? "Checking…"}</span>
@@ -382,14 +501,58 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
           <button className="mini" onClick={() => invoke("open_browser_profile").catch((e) => setBrowser((b) => (b ? { ...b, message: String(e) } : b)))} disabled={!browser?.browser}>
             Open Jarvis's browser
           </button>
-        </section>
+          </section>
+          <section hidden={!show("screen")}>
+            {q && <div className="label">{NAV.find((n) => n.id === "screen")?.label}</div>}
+          <div className={`status-line ${trusted ? "ok" : "bad"}`}>
+            <i />
+            <span>{trusted ? "Jarvis can see which app is in front and the text you select." : "Accessibility is off, so Jarvis can't see your selected text or paste into other apps."}</span>
+            {!trusted && (
+              <button className="mini" onClick={() => invoke("request_accessibility").then(() => setTimeout(checkTrusted, 800))}>
+                Turn on
+              </button>
+            )}
+          </div>
+          <div className={`status-line ${screenOk ? "ok" : "bad"}`}>
+            <i />
+            <span>{screenOk ? "Jarvis can look at a window when you ask." : "Screen Recording is off, so Jarvis can't look at a window. After turning it on, quit and reopen Jarvis."}</span>
+            {!screenOk && (
+              <button className="mini" onClick={() => invoke("request_screen_recording").then(() => setTimeout(checkTrusted, 800))}>
+                Turn on
+              </button>
+            )}
+          </div>
+          <p className="hint">Jarvis looks only when you ask ("explain this", "fix this error"), never in the background. Text you select is sent to Gemini and, for code fixes, to Codex.</p>
+          <label>When Jarvis wants to…</label>
+          <div className="rule-table">
+            {(["write", "send"] as Risk[]).map((risk) => (
+              <div className="rule-row" key={risk}>
+                <div>
+                  <b>{RISK_INFO[risk].label}</b>
+                  <small>{RISK_INFO[risk].hint}</small>
+                </div>
+                <select aria-label={RISK_INFO[risk].label} value={ruleFor(risk, s)} onChange={(e) => setRule(risk, e.target.value as Rule)}>
+                  {RISK_INFO[risk].rules.map((r) => (
+                    <option key={r} value={r}>
+                      {r === "ask" ? "Ask me" : r === "auto" ? "Do it" : "Never"}
+                      {r === DEFAULT_RULE[risk] ? " (default)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+          <p className="hint">Every approval, rejection and automatic action is logged in audit.jsonl in your Jarvis folder.</p>
+          </section>
+          </div>
 
-        <footer>
-          <span className="hint">{saved || "Settings are stored on this Mac only."}</span>
-          <button className="btn primary" onClick={save}>
-            Save
-          </button>
-        </footer>
+          <footer>
+            <span className="hint">{saved || "Settings are stored on this Mac only."}</span>
+            <button className="btn primary" onClick={save}>
+              Save
+            </button>
+          </footer>
+        </div>
       </div>
     </div>
   );

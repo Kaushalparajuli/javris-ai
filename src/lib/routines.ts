@@ -112,6 +112,27 @@ export const TEMPLATES: Template[] = [
     }),
   },
   {
+    id: "day",
+    title: "Your day",
+    blurb: "Each weekday morning: your schedule and email in one note, ranked by what needs you first.",
+    icon: "calendar",
+    make: () => ({
+      title: "Your day",
+      request: "Every weekday morning, tell me what needs my attention today.",
+      repeat: "weekdays",
+      time: "07:45",
+      depth: "quick",
+      steps: [
+        step("calendar", "Check today's meetings"),
+        step("inbox", "Read the email that came in since yesterday"),
+        step(
+          "write",
+          "Write a short note on what needs attention today, most important first: meetings with the time and what to prepare, then email that needs an answer today, then anything that can wait. Skip newsletters and promotions. Keep it under 200 words",
+        ),
+      ],
+    }),
+  },
+  {
     id: "meetings",
     title: "Meeting prep",
     blurb: "Each weekday morning: today's meetings, background, and questions to ask.",
@@ -181,12 +202,12 @@ Usually finish with a write step so there's a clear result. Don't add steps the 
 Schedule: repeat is manual (only when asked), daily, weekdays or weekly; time is local 24-hour HH:MM; weekday is 0 = Monday … 6 = Sunday. "Morning" means 08:00 unless they said otherwise.
 Depth: deep for thorough analysis or comparisons, quick otherwise.`;
 
-const API = "https://generativelanguage.googleapis.com/v1beta";
+export const API = "https://generativelanguage.googleapis.com/v1beta";
 
 let plannerModels: string[] = [];
 
 /** Fast text models this key can use, newest first. */
-async function pickModels(apiKey: string) {
+export async function pickModels(apiKey: string) {
   if (plannerModels.length) return plannerModels;
   const res = await fetch(`${API}/models?pageSize=1000&key=${encodeURIComponent(apiKey)}`);
   if (!res.ok) throw new Error("Jarvis couldn't reach Google with your Gemini key.");

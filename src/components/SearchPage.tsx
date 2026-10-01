@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { day } from "../lib/format";
 
@@ -10,6 +11,21 @@ interface Hit {
   snippet: string;
   at: number;
   inTitle: boolean;
+}
+
+interface FileHit {
+  path: string;
+  name: string;
+  folder: string;
+  snippet: string;
+}
+
+interface IndexStatus {
+  folders: string[];
+  files: number;
+  chunks: number;
+  embedded: number;
+  scanning: boolean;
 }
 
 const GROUPS: { kind: Hit["kind"]; label: string }[] = [
@@ -42,14 +58,38 @@ export default function SearchPage({
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<Hit[]>([]);
   const [busy, setBusy] = useState(false);
+  const [files, setFiles] = useState<FileHit[]>([]);
+  const [index, setIndex] = useState<IndexStatus | null>(null);
+  const [indexBusy, setIndexBusy] = useState(false);
+  const [indexError, setIndexError] = useState("");
   const input = useRef<HTMLInputElement>(null);
   const needle = q.trim();
 
   useEffect(() => input.current?.focus(), []);
+  useEffect(() => {
+    invoke<IndexStatus>("index_status").then(setIndex).catch(() => {});
+  }, []);
+
+  const changeFolders = async (job: Promise<IndexStatus>) => {
+    setIndexBusy(true);
+    setIndexError("");
+    try {
+      setIndex(await job);
+    } catch (e) {
+      setIndexError(String(e));
+    } finally {
+      setIndexBusy(false);
+    }
+  };
+  const addFolder = async () => {
+    const picked = await openDialog({ directory: true, multiple: false, title: "Choose a folder for Jarvis to search" }).catch(() => null);
+    if (typeof picked === "string") changeFolders(invoke<IndexStatus>("index_add_folder", { path: picked }));
+  };
 
   useEffect(() => {
     if (needle.length < 2) {
       setHits([]);
+      setFiles([]);
       setBusy(false);
       return;
     }
@@ -60,6 +100,9 @@ export default function SearchPage({
         .then((h) => live && setHits(h))
         .catch(() => live && setHits([]))
         .finally(() => live && setBusy(false));
+      invoke<FileHit[]>("index_search", { query: needle, limit: 8 })
+        .then((f) => live && setFiles(f))
+        .catch(() => live && setFiles([]));
     }, 180);
     return () => {
       live = false;
@@ -91,13 +134,25 @@ export default function SearchPage({
           />
         </label>
         <span className="muted small count" aria-live="polite">
-          {needle.length < 2 ? "" : busy ? "Searching…" : `${hits.length} result${hits.length === 1 ? "" : "s"}`}
+          {needle.length < 2 ? "" : busy ? "Searching…" : `${hits.length + files.length} result${hits.length + files.length === 1 ? "" : "s"}`}
         </span>
       </header>
 
-      {needle.length >= 2 && !busy && hits.length === 0 && <p className="muted small pad">Nothing found for “{needle}”.</p>}
+      {needle.length >= 2 && !busy && hits.length === 0 && files.length === 0 && <p className="muted small pad">Nothing found for “{needle}”.</p>}
 
       <div className="results">
+        {files.length > 0 && (
+          <section>
+            <div className="label">Files · {files.length}</div>
+            {files.map((f) => (
+              <button key={f.path} className="hit" onClick={() => invoke("reveal_path", { path: f.path }).catch(() => {})} title={f.path}>
+                <b>{highlight(f.name, needle)}</b>
+                <span className="when">{f.folder.split("/").pop()}</span>
+                <span className="snip">{highlight(f.snippet, needle)}</span>
+              </button>
+            ))}
+          </section>
+        )}
         {groups.map((g) => (
           <section key={g.kind}>
             <div className="label">
@@ -117,6 +172,34 @@ export default function SearchPage({
           </section>
         ))}
       </div>
+
+      <section className="index-box">
+        <div className="label">
+          Files Jarvis can search
+          <button className="mini" onClick={addFolder} disabled={indexBusy}>
+            Add folder
+          </button>
+        </div>
+        {index && index.folders.length === 0 && <p className="muted small">Add a folder of notes, documents or PDFs and search them here or by voice. Only folders you add are read.</p>}
+        {index?.folders.map((f) => (
+          <div className="folder-row" key={f}>
+            <span title={f}>{f.replace(/^\/Users\/[^/]+/, "~")}</span>
+            <button className="mini" onClick={() => changeFolders(invoke<IndexStatus>("index_remove_folder", { path: f }))} disabled={indexBusy}>
+              Remove
+            </button>
+          </div>
+        ))}
+        {index && index.folders.length > 0 && (
+          <p className="muted small">
+            {indexBusy || index.scanning ? "Reading files… " : ""}
+            {index.files} files · {index.chunks} passages · {index.embedded >= index.chunks ? "searchable by meaning" : `${index.embedded}/${index.chunks} ready for meaning search`}
+            <button className="mini" onClick={() => changeFolders(invoke<IndexStatus>("index_refresh"))} disabled={indexBusy}>
+              Refresh
+            </button>
+          </p>
+        )}
+        {indexError && <p className="error-text">{indexError}</p>}
+      </section>
     </section>
   );
 }

@@ -178,6 +178,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                             last = Instant::now();
                             detector.reset();
                             trigger = Trigger::default();
+                            crate::context::snapshot(&handle);
                             let _ = handle.emit("wake-word", score);
                         }
                     }

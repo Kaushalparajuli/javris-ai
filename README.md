@@ -26,6 +26,7 @@ speaker                                                   task-update ──▶ 
    npm install
    npm run tauri dev
    ```
+   For Gmail, Calendar, Drive, Docs, Sheets and YouTube (enable each API in your Google Cloud project; then connect each app you want under Settings, Apps), copy `.env.example` to `.env` and fill in a Google "Desktop app" OAuth client ID and secret. They're compiled into the app at build time (rebuild after changing them); `.env` is not committed.
 4. Set up opens on first launch: paste the Gemini key, press Install for the research helper (Codex), then Connect to sign in to ChatGPT. More options are under Settings.
 5. Press the mic button (or ⌥Space) and say something like “Jarvis, research the best vector databases for a small startup, deep dive.”
 

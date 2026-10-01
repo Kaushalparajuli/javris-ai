@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
@@ -36,6 +37,13 @@ pub struct Settings {
     /// for Calendar and Gmail. Google treats desktop client secrets as not really secret.
     pub google_client_id: String,
     pub google_client_secret: String,
+    /// Approval rule per kind of action ("write", "send", …): "ask", "auto" or "never".
+    /// Missing kinds use the defaults in src/lib/approvals.ts.
+    pub approvals: HashMap<String, String>,
+    /// The project workspace Jarvis is working in (a folder name under ~/Jarvis/projects), or empty.
+    pub active_workspace: String,
+    /// How many Codex workers may run at once; the rest wait their turn.
+    pub max_workers: u32,
 }
 
 impl Default for Settings {
@@ -57,6 +65,9 @@ impl Default for Settings {
             wake_word: false,
             google_client_id: String::new(),
             google_client_secret: String::new(),
+            approvals: HashMap::new(),
+            active_workspace: String::new(),
+            max_workers: 3,
         }
     }
 }
@@ -96,11 +107,15 @@ pub fn get_settings(app: AppHandle) -> Settings {
 
 #[tauri::command]
 pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
-    let path = settings_file(&app).ok_or("No config folder available")?;
+    store(&app, &settings)
+}
+
+pub fn store(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+    let path = settings_file(app).ok_or("No config folder available")?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {

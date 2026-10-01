@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useState } from "react";
 import type { Task } from "../lib/types";
 import ImageThumb from "./ImageThumb";
@@ -20,9 +21,23 @@ const PILL: Record<Task["status"], string> = {
   cancelled: "Cancelled",
 };
 
+/** A finished code task shows how the project's own checks went instead of just "Done". */
+const CHECK_PILL = { running: "Checking…", passed: "Done · checks pass", failed: "Checks failed" };
+
+/** Upload a finished document or report to Google Drive as a Google Doc. */
+function saveToDrive(task: Task, set: (d: { state: "busy" | "done" | "error"; link?: string; error?: string }) => void) {
+  set({ state: "busy" });
+  const file = task.kind === "document" ? "document.md" : "report.md";
+  invoke<{ link: string }>("drive_upload", { path: `${task.dir}/${file}`, name: task.title })
+    .then((f) => set({ state: "done", link: f.link }))
+    .catch((e) => set({ state: "error", error: String(e) }));
+}
+
 export default function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: number) => void }) {
   const [now, setNow] = useState(Date.now());
+  const [drive, setDrive] = useState<{ state: "busy" | "done" | "error"; link?: string; error?: string } | null>(null);
   const running = task.status === "running";
+  const check = task.kind === "code" && task.status === "done" && !!task.verify;
   useEffect(() => {
     if (!running) return;
     const i = setInterval(() => setNow(Date.now()), 1000);
@@ -50,13 +65,13 @@ export default function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: nu
     >
       <div className="task-top">
         <h3>{task.title}</h3>
-        <span className={`pill ${task.status}`}>
-          {PILL[task.status]}
-          {!running && task.status === "done" ? ` · ${elapsed(task, now)}` : ""}
+        <span className={`pill ${check ? (task.verify === "running" ? "running" : task.verify === "failed" ? "failed" : "done") : task.status}`}>
+          {check ? CHECK_PILL[task.verify as "running" | "passed" | "failed"] : PILL[task.status]}
+          {!check && !running && task.status === "done" ? ` · ${elapsed(task, now)}` : ""}
         </span>
       </div>
       <div className="meta">
-        #{task.id} · {task.kind === "image" ? "image" : task.kind === "document" ? "document" : task.kind === "browser" ? "browser" : task.kind === "skill" ? "know-how" : task.depth === "quick" ? "quick" : "deep dive"} · {clock(task.startedAt)}
+        #{task.id} · {task.kind === "image" ? "image" : task.kind === "document" ? "document" : task.kind === "browser" ? "browser" : task.kind === "code" ? "code" : task.kind === "skill" ? "know-how" : task.depth === "quick" ? "quick" : "deep dive"} · {clock(task.startedAt)}
         {running ? ` · ${elapsed(task, now)}` : ""}
         {task.parentId ? ` · follow-up to #${task.parentId}` : ""}
         {task.refs?.length ? ` · ${task.refs.length} reference${task.refs.length > 1 ? "s" : ""}` : ""}
@@ -104,6 +119,17 @@ export default function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: nu
         <button className="mini" onClick={() => invoke("reveal_task", { id: task.id }).catch(() => {})}>
           Show file
         </button>
+        {task.status === "done" && (task.kind === "document" || task.kind === "research" || task.kind === "browser") && !task.routine && (
+          drive?.state === "done" ? (
+            <button className="mini" onClick={() => openUrl(drive.link!).catch(() => {})}>
+              Saved · Open in Drive
+            </button>
+          ) : (
+            <button className="mini" disabled={drive?.state === "busy"} title={drive?.error} onClick={() => saveToDrive(task, setDrive)}>
+              {drive?.state === "busy" ? "Saving…" : drive?.state === "error" ? "Retry Drive" : "Save to Drive"}
+            </button>
+          )
+        )}
         {running && (
           <button className="mini" onClick={() => invoke("cancel_task", { id: task.id }).catch(() => {})}>
             Stop

@@ -10,14 +10,24 @@ import ReportViewer from "./components/ReportViewer";
 import SearchPage from "./components/SearchPage";
 import BriefingsPage from "./components/BriefingsPage";
 import KnowHowPage from "./components/KnowHowPage";
+import MemoryPage from "./components/MemoryPage";
 import RoutinesPage from "./components/RoutinesPage";
 import SetupPanel from "./components/SetupPanel";
+import ApprovalCard from "./components/ApprovalCard";
+import CalendarPage from "./components/CalendarPage";
+import MailPage from "./components/MailPage";
+import DrivePage from "./components/DrivePage";
+import YouTubePage, { type YtIntent } from "./components/YouTubePage";
+import CommandPalette from "./components/CommandPalette";
+import MeetingBanner from "./components/MeetingBanner";
+import { listen } from "@tauri-apps/api/event";
 import SettingsPanel from "./components/SettingsPanel";
 import TaskCard from "./components/TaskCard";
 import { day } from "./lib/format";
 import { isImportable } from "./lib/importDoc";
 import { useJarvis } from "./lib/jarvis";
-import type { CodexStatus, Task } from "./lib/types";
+import { useMiniBridge } from "./lib/mini";
+import type { CodexStatus, Task, Workspace } from "./lib/types";
 
 const SIDE_KEY = "jarvis.sidebar.collapsed";
 /** Below this width the sidebar stops being a column and opens as a drawer instead. */
@@ -44,10 +54,37 @@ const MODE_LABEL = { off: "Offline", connecting: "Connecting", live: "Listening"
 
 export default function App() {
   const j = useJarvis();
+  useMiniBridge(j);
   const [showSettings, setShowSettings] = useState(false);
+  const [showPalette, setShowPalette] = useState(false);
+  useEffect(() => {
+    const un = listen<string>("shortcut", (e) => {
+      if (e.payload === "palette") setShowPalette(true);
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
   // What fills the main area beside the sidebar.
-  const [page, setPage] = useState<"chat" | "library" | "search" | "briefings" | "routines" | "knowhow">("chat");
+  const [page, setPage] = useState<"chat" | "library" | "search" | "briefings" | "routines" | "knowhow" | "mail" | "calendar" | "drive" | "youtube" | "memory">("chat");
+  // Jarvis asking the YouTube page to show results or play a video.
+  const [ytIntent, setYtIntent] = useState<YtIntent | null>(null);
+  useEffect(() => {
+    const on = (e: Event) => {
+      setYtIntent({ ...(e as CustomEvent<Omit<YtIntent, "seq">>).detail, seq: Date.now() });
+      setPage("youtube");
+    };
+    window.addEventListener("jarvis-youtube", on);
+    return () => window.removeEventListener("jarvis-youtube", on);
+  }, []);
   const showLibrary = page === "library";
+  const [ws, setWs] = useState<Workspace | null>(null);
+  useEffect(() => {
+    const load = () => invoke<Workspace | null>("get_active_workspace").then(setWs).catch(() => {});
+    load();
+    window.addEventListener("jarvis-workspace", load);
+    return () => window.removeEventListener("jarvis-workspace", load);
+  }, []);
   const isMac = navigator.userAgent.includes("Mac");
 
   // ⌘K (Ctrl+K on Windows) jumps to search from anywhere.
@@ -360,6 +397,8 @@ export default function App() {
             </div>
           </div>
           <nav className="nav">
+            <div className="navgroup">
+              <div className="label">Create</div>
             <button
               className="navitem"
               onClick={() => {
@@ -384,6 +423,9 @@ export default function App() {
               </svg>
               Open file…
             </button>
+            </div>
+            <div className="navgroup">
+              <div className="label">Workspace</div>
             <button
               className={`navitem ${showLibrary && !docTask ? "on" : ""}`}
               onClick={() => {
@@ -397,6 +439,69 @@ export default function App() {
               Library
               {library.length > 0 && <span>{library.length}</span>}
             </button>
+            <button
+              className={`navitem ${page === "mail" && !docTask ? "on" : ""}`}
+              onClick={() => {
+                closePanel();
+                setPage("mail");
+              }}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 5h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm1 2v.5l8 5 8-5V7zm16 2.9-8 5-8-5V17h16z" />
+              </svg>
+              Mail
+            </button>
+            <button
+              className={`navitem ${page === "calendar" && !docTask ? "on" : ""}`}
+              onClick={() => {
+                closePanel();
+                setPage("calendar");
+              }}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 2h2v2h6V2h2v2h3a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3zM5 9v10h14V9zm2 2h4v4H7z" />
+              </svg>
+              Calendar
+            </button>
+            <button
+              className={`navitem ${page === "drive" && !docTask ? "on" : ""}`}
+              onClick={() => {
+                closePanel();
+                setPage("drive");
+              }}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8.2 3h7.6l6.2 10.7-3.8 6.3H5.8L2 13.7zm.9 2L4.3 13.7 6.6 17.9 11.4 9.6zm6.1 0H10l5.6 9.7h5zM8 16l-.1.1.9 1.9h8.6l1.1-1.9z" />
+              </svg>
+              Drive
+            </button>
+            <button
+              className={`navitem ${page === "youtube" && !docTask ? "on" : ""}`}
+              onClick={() => {
+                closePanel();
+                setPage("youtube");
+              }}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M21.6 7.2a2.5 2.5 0 0 0-1.8-1.8C18.2 5 12 5 12 5s-6.2 0-7.8.4A2.5 2.5 0 0 0 2.4 7.2C2 8.8 2 12 2 12s0 3.2.4 4.8a2.5 2.5 0 0 0 1.8 1.8C5.8 19 12 19 12 19s6.2 0 7.8-.4a2.5 2.5 0 0 0 1.8-1.8c.4-1.6.4-4.8.4-4.8s0-3.2-.4-4.8zM10 15V9l5.2 3z" />
+              </svg>
+              YouTube
+            </button>
+            <button
+              className={`navitem ${page === "memory" && !docTask ? "on" : ""}`}
+              onClick={() => {
+                closePanel();
+                setPage("memory");
+              }}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 2a7 7 0 0 0-4 12.7V18h8v-3.3A7 7 0 0 0 12 2zm-3 18h6v2H9z" />
+              </svg>
+              Memory{ws ? ` · ${ws.name}` : ""}
+            </button>
+            </div>
+            <div className="navgroup">
+              <div className="label">Automate</div>
             <button
               className={`navitem ${page === "briefings" && !docTask ? "on" : ""}`}
               onClick={() => {
@@ -433,6 +538,7 @@ export default function App() {
               </svg>
               Know-how
             </button>
+            </div>
             {!setupDone && (
               <button className="navitem setup-nav" onClick={() => setShowSetup(true)}>
                 <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -485,8 +591,48 @@ export default function App() {
             onOpenTask={j.setReportId}
             onClose={() => setPage("chat")}
           />
+        ) : page === "memory" ? (
+          <MemoryPage onClose={() => setPage("chat")} />
         ) : page === "knowhow" ? (
           <KnowHowPage tasks={j.tasks} onClose={() => setPage("chat")} />
+        ) : page === "mail" ? (
+          <MailPage
+            onAsk={(t) => {
+              setPage("chat");
+              j.sendTyped(t);
+            }}
+            onOpenSettings={() => setShowSettings(true)}
+            onClose={() => setPage("chat")}
+          />
+        ) : page === "calendar" ? (
+          <CalendarPage
+            settings={j.settings}
+            onAsk={(t) => {
+              setPage("chat");
+              j.sendTyped(t);
+            }}
+            onOpenSettings={() => setShowSettings(true)}
+            onClose={() => setPage("chat")}
+          />
+        ) : page === "drive" ? (
+          <DrivePage
+            onAsk={(t) => {
+              setPage("chat");
+              j.sendTyped(t);
+            }}
+            onOpenSettings={() => setShowSettings(true)}
+            onClose={() => setPage("chat")}
+          />
+        ) : page === "youtube" ? (
+          <YouTubePage
+            intent={ytIntent}
+            onAsk={(t) => {
+              setPage("chat");
+              j.sendTyped(t);
+            }}
+            onOpenSettings={() => setShowSettings(true)}
+            onClose={() => setPage("chat")}
+          />
         ) : page === "briefings" ? (
           <BriefingsPage chatId={j.chatId} onOpenTask={j.setReportId} onClose={() => setPage("chat")} />
         ) : page === "search" ? (
@@ -514,12 +660,29 @@ export default function App() {
               <div className="banner" role="alert">
                 <span>{j.error}</span>
                 <div className="actions">
+                  {j.permission && (
+                    <button
+                      className="mini"
+                      onClick={() => {
+                        invoke(j.permission === "screen" ? "request_screen_recording" : "request_accessibility").catch(() => {});
+                        j.setPermission(null);
+                      }}
+                    >
+                      {j.permission === "screen" ? "Turn on Screen Recording" : "Turn on Accessibility"}
+                    </button>
+                  )}
                   {j.micBlocked && (
                     <button className="mini" onClick={j.openMicSettings}>
                       Open Microphone settings
                     </button>
                   )}
-                  <button className="mini" onClick={() => j.setError("")}>
+                  <button
+                    className="mini"
+                    onClick={() => {
+                      j.setError("");
+                      j.setPermission(null);
+                    }}
+                  >
                     Dismiss
                   </button>
                 </div>
@@ -535,6 +698,9 @@ export default function App() {
                     <li>“Quick check: what's the latest stable version of Tauri?”</li>
                     <li>“Make me an image of a minimalist mountain logo in navy and gold.”</li>
                     <li>“Remember that I prefer sources from the last 12 months.”</li>
+                    <li>Select some text in any app, then: “Explain this” or “Rewrite this more politely.”</li>
+                    <li>Hit an error in your code: “Look at this error and fix it in the Jarvis project.”</li>
+                    <li>Press ⌥⇧Space to type a command instead of speaking.</li>
                   </ul>
                 </div>
               )}
@@ -572,6 +738,17 @@ export default function App() {
               <button type="button" className={`mic ${j.micOn ? "" : "off"}`} onClick={j.toggleMic} aria-label={j.micOn ? "Mute microphone" : "Start talking"}>
                 <svg viewBox="0 0 24 24">
                   <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => (j.meeting ? j.stopMeeting() : j.startMeeting(""))}
+                aria-label={j.meeting ? "Stop recording the meeting" : "Record a meeting"}
+                title={j.meeting ? "Stop recording" : "Record a meeting: transcript, decisions and action items"}
+              >
+                <svg viewBox="0 0 24 24">
+                  {j.meeting ? <path d="M7 7h10v10H7z" /> : <path d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm0-5C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16z" />}
                 </svg>
               </button>
               <button type="button" className="icon-btn clip" onClick={pickFiles} aria-label="Attach images" title="Attach logo or reference images">
@@ -673,6 +850,20 @@ export default function App() {
           }}
         />
       )}
+
+      {showPalette && <CommandPalette onSend={(t) => j.sendTyped(t)} onClose={() => setShowPalette(false)} />}
+      {j.meeting && <MeetingBanner title={j.meeting.title} startedAt={j.meeting.startedAt} onStop={j.stopMeeting} />}
+      {j.controlling && (
+        <div className="control-banner" role="status">
+          <span>
+            Jarvis is controlling <b>{j.controlling}</b>
+          </span>
+          <button className="btn" onClick={j.stopSpeaking}>
+            Stop <kbd>⌥.</kbd>
+          </button>
+        </div>
+      )}
+      <ApprovalCard />
 
       {showSettings && j.settings && (
         <SettingsPanel initial={j.settings} onClose={() => setShowSettings(false)} onSaved={() => j.reloadSettings()} />

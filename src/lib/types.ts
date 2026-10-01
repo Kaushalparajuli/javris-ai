@@ -26,11 +26,15 @@ export interface Task {
   finishedAt: number | null;
   searches: number;
   sources: number;
-  kind: "research" | "image" | "document" | "browser" | "skill";
+  kind: "research" | "image" | "document" | "browser" | "skill" | "code";
   images: string[];
   refs: string[];
   /** For a step of a routine: the run it belongs to. */
   routine: string;
+  /** For a code task: the project folder it works in. */
+  project?: string;
+  /** For a code task whose project has checks: running, passed or failed. */
+  verify?: "" | "running" | "passed" | "failed";
 }
 
 export interface Settings {
@@ -49,9 +53,8 @@ export interface Settings {
   notify: boolean;
   /** Listen for "hey Jarvis" on this computer. */
   wakeWord: boolean;
-  /** The user's own Google OAuth "Desktop app" client, for Calendar and Gmail. */
-  googleClientId: string;
-  googleClientSecret: string;
+  /** How to treat each kind of action: "ask", "auto" or "never". See lib/approvals.ts. */
+  approvals: Record<string, string>;
 }
 
 export interface CodexStatus {
@@ -210,4 +213,24 @@ export interface KnowHow {
   draft: boolean;
   updatedAt: number;
   files: string[];
+}
+
+export interface Workspace {
+  slug: string;
+  name: string;
+  description: string;
+  folder: string;
+  verify: string[];
+  url: string;
+  created: number;
+}
+
+export interface Memory {
+  id: number;
+  kind: string;
+  text: string;
+  workspace: string;
+  source: string;
+  created: number;
+  pinned: boolean;
 }
