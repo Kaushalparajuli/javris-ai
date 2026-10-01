@@ -69,6 +69,9 @@ pub struct Task {
     /// Reference files (logos, photos) given to the worker.
     #[serde(default)]
     pub refs: Vec<String>,
+    /// For a step of a routine: the run it belongs to. The routine reports the run as a whole.
+    #[serde(default)]
+    pub routine: String,
 }
 
 fn research_kind() -> String {
@@ -128,7 +131,7 @@ pub(crate) fn truncate(s: &str, n: usize) -> String {
     }
 }
 
-fn slug(s: &str) -> String {
+pub(crate) fn slug(s: &str) -> String {
     let mut out = String::new();
     for c in s.to_lowercase().chars() {
         if c.is_ascii_alphanumeric() {
@@ -175,7 +178,7 @@ pub fn load_index(app: &AppHandle) {
     }
 }
 
-fn emit_update(app: &AppHandle, id: u32) {
+pub(crate) fn emit_update(app: &AppHandle, id: u32) {
     let task = app.state::<TaskStore>().tasks.lock().unwrap().get(&id).cloned();
     if let Some(t) = task {
         let _ = app.emit("task-update", t);
@@ -473,7 +476,7 @@ fn apply_event(task: &mut Task, v: &Value, last_message: &mut String) {
 fn explain_failure(stderr: &str, fallback: &str) -> String {
     let lower = stderr.to_lowercase();
     if lower.contains("login") || lower.contains("not logged in") || lower.contains("unauthorized") || lower.contains("401") {
-        return "Codex is not logged in. Run `codex login` in Terminal, then try again.".into();
+        return "The research helper isn't signed in to ChatGPT. Open Set up from the sidebar and press Connect, then try again.".into();
     }
     if lower.contains("rate limit") || lower.contains("usage limit") {
         return "Codex hit your plan's usage limit. Try again later.".into();
@@ -607,6 +610,10 @@ pub(crate) fn finish(app: &AppHandle, id: u32, status: Status, summary: String, 
         if t.kind == "browser" {
             t.images = images_since(Path::new(&t.dir), t.started_at);
         }
+        if t.kind == "skill" && t.status == Status::Done && !Path::new(&t.dir).join("SKILL.md").is_file() {
+            t.status = Status::Failed;
+            t.error = "Codex finished but didn't write the know-how.".into();
+        }
         if t.kind == "image" {
             t.images = images_since(Path::new(&t.dir), t.started_at);
             if t.status == Status::Done && t.images.is_empty() {
@@ -626,7 +633,8 @@ pub(crate) fn finish(app: &AppHandle, id: u32, status: Status, summary: String, 
 /// menu bar while tasks run). Uses the OS notification centre, so it works the same on Windows.
 fn notify_finished(app: &AppHandle, task: &Task) {
     use tauri_plugin_notification::NotificationExt;
-    if !settings::load(app).notify || task.status == Status::Cancelled {
+    // A routine's steps are reported once, by the routine, when the whole run needs the user.
+    if !settings::load(app).notify || task.status == Status::Cancelled || !task.routine.is_empty() {
         return;
     }
     let in_front = app
@@ -640,6 +648,7 @@ fn notify_finished(app: &AppHandle, task: &Task) {
         "image" => "Images",
         "document" => "Document",
         "browser" => "Browser task",
+        "skill" => "Know-how",
         _ if task.title.starts_with("Briefing:") => "Briefing",
         _ => "Research",
     };
@@ -741,6 +750,7 @@ pub(crate) fn new_task(
         kind: kind.to_string(),
         images: vec![],
         refs: vec![],
+        routine: String::new(),
         steps: if kind == "image" {
             vec![Step { id: "generate".into(), label: "Generating the image".into(), detail: "usually 30–90 seconds".into(), done: false }]
         } else {
@@ -756,6 +766,19 @@ pub(crate) fn snapshot(app: &AppHandle) -> Vec<Task> {
     app.state::<TaskStore>().tasks.lock().unwrap().values().cloned().collect()
 }
 
+pub(crate) fn get_task(app: &AppHandle, id: u32) -> Option<Task> {
+    app.state::<TaskStore>().tasks.lock().unwrap().get(&id).cloned()
+}
+
+/// Mark a task as one step of a routine run.
+pub(crate) fn set_routine(app: &AppHandle, id: u32, run_id: &str) -> Option<Task> {
+    let store = app.state::<TaskStore>();
+    let mut tasks = store.tasks.lock().unwrap();
+    let t = tasks.get_mut(&id)?;
+    t.routine = run_id.to_string();
+    Some(t.clone())
+}
+
 #[tauri::command]
 pub fn list_tasks(store: State<'_, TaskStore>) -> Vec<Task> {
     let mut list: Vec<Task> = store.tasks.lock().unwrap().values().cloned().collect();
@@ -764,14 +787,22 @@ pub fn list_tasks(store: State<'_, TaskStore>) -> Vec<Task> {
 }
 
 #[tauri::command]
-pub fn start_task(app: AppHandle, title: String, request: String, depth: String, chat_id: Option<String>) -> Result<Task, String> {
+pub fn start_task(
+    app: AppHandle,
+    title: String,
+    request: String,
+    depth: String,
+    chat_id: Option<String>,
+    know_how: Option<Vec<String>>,
+) -> Result<Task, String> {
     let s = settings::load(&app);
     let codex = find_codex(&app, &s).ok_or("Codex CLI was not found. Install it with `npm install -g @openai/codex` or set its path in Settings.")?;
     let title = if title.trim().is_empty() { truncate(&request, 60) } else { title };
     let task = new_task(&app, "research", &title, &request, &depth, None, None, chat_id.as_deref().unwrap_or(""))?;
     let dir = PathBuf::from(&task.dir);
+    let know = crate::routines::copy_know_how(&app, &know_how.unwrap_or_default(), &dir);
     let mut args = base_args(&s, &dir, &task.depth, true);
-    args.push(research_prompt(&s, &request, &task.depth));
+    args.push(format!("{}{}", research_prompt(&s, &request, &task.depth), crate::routines::know_how_rule(&know)));
     save_index(&app);
     let _ = app.emit("task-update", &task);
     tauri::async_runtime::spawn(run_codex(app.clone(), task.id, args, dir, codex));
@@ -1025,7 +1056,7 @@ pub async fn codex_status(app: AppHandle) -> CodexStatus {
         path: path.display().to_string(),
         version,
         logged_in,
-        message: if logged_in { truncate(&text, 120) } else { "Not logged in. Run `codex login` in Terminal.".into() },
+        message: if logged_in { truncate(&text, 120) } else { "Not signed in to ChatGPT yet. Press Connect to sign in.".into() },
     }
 }
 
@@ -1113,6 +1144,46 @@ pub async fn install_codex(app: AppHandle) -> CodexStatus {
     }
 
     let _ = app.emit("codex-install", "Installed. Checking Codex…");
+    codex_status(app).await
+}
+
+/// Sign in to ChatGPT for Codex without a terminal: runs `codex login`, which opens the sign-in
+/// page in the browser and waits for it. Its output goes to the UI as `codex-login` (it includes
+/// the link, in case the browser didn't open), then the resulting status comes back.
+#[tauri::command]
+pub async fn codex_login(app: AppHandle) -> CodexStatus {
+    let s = settings::load(&app);
+    let Some(codex) = find_codex(&app, &s) else {
+        return install_failed("Install the research helper first.".into());
+    };
+    let mut cmd = Command::new(&codex);
+    cmd.arg("login")
+        .env("PATH", child_path(&app))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return install_failed(format!("Couldn't start the sign-in: {e}")),
+    };
+    for pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn tokio::io::AsyncRead + Unpin + Send>), child.stderr.take().map(|p| Box::new(p) as _)]
+        .into_iter()
+        .flatten()
+    {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut lines = BufReader::new(pipe).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    let _ = app.emit("codex-login", line.trim().to_string());
+                }
+            }
+        });
+    }
+    // The sign-in page waits for the user; give up after ten minutes.
+    let _ = tokio::time::timeout(Duration::from_secs(600), child.wait()).await;
+    let _ = child.kill().await;
     codex_status(app).await
 }
 

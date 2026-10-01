@@ -5,6 +5,7 @@ mod capture;
 mod chats;
 mod google;
 mod mic;
+mod routines;
 mod search;
 mod settings;
 mod tasks;
@@ -66,6 +67,7 @@ pub fn run() {
         .setup(move |app| {
             tasks::load_index(app.handle());
             tauri::async_runtime::spawn(briefings::run_scheduler(app.handle().clone()));
+            tauri::async_runtime::spawn(routines::run_scheduler(app.handle().clone()));
             tauri::async_runtime::spawn(browser::run_reaper(app.handle().clone()));
             if settings::load(app.handle()).wake_word {
                 if let Err(e) = wakeword::start(app.handle()) {
@@ -131,6 +133,7 @@ pub fn run() {
             tasks::read_notes,
             tasks::codex_status,
             tasks::install_codex,
+            tasks::codex_login,
             tasks::write_document,
             tasks::new_document,
             tasks::read_document,
@@ -163,6 +166,17 @@ pub fn run() {
             briefings::save_briefing,
             briefings::delete_briefing,
             briefings::run_briefing_now,
+            routines::list_routines,
+            routines::save_routine,
+            routines::delete_routine,
+            routines::list_runs,
+            routines::run_routine,
+            routines::cancel_run,
+            routines::answer_run,
+            routines::list_know_how,
+            routines::save_know_how,
+            routines::delete_know_how,
+            routines::learn_know_how,
             chats::load_chat,
             chats::new_chat,
             chats::save_chat,

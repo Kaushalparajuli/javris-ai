@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useEffect, useRef, useState } from "react";
@@ -8,12 +9,15 @@ import Orb from "./components/Orb";
 import ReportViewer from "./components/ReportViewer";
 import SearchPage from "./components/SearchPage";
 import BriefingsPage from "./components/BriefingsPage";
+import KnowHowPage from "./components/KnowHowPage";
+import RoutinesPage from "./components/RoutinesPage";
+import SetupPanel from "./components/SetupPanel";
 import SettingsPanel from "./components/SettingsPanel";
 import TaskCard from "./components/TaskCard";
 import { day } from "./lib/format";
 import { isImportable } from "./lib/importDoc";
 import { useJarvis } from "./lib/jarvis";
-import type { Task } from "./lib/types";
+import type { CodexStatus, Task } from "./lib/types";
 
 const SIDE_KEY = "jarvis.sidebar.collapsed";
 /** Below this width the sidebar stops being a column and opens as a drawer instead. */
@@ -42,7 +46,7 @@ export default function App() {
   const j = useJarvis();
   const [showSettings, setShowSettings] = useState(false);
   // What fills the main area beside the sidebar.
-  const [page, setPage] = useState<"chat" | "library" | "search" | "briefings">("chat");
+  const [page, setPage] = useState<"chat" | "library" | "search" | "briefings" | "routines" | "knowhow">("chat");
   const showLibrary = page === "library";
   const isMac = navigator.userAgent.includes("Mac");
 
@@ -127,10 +131,26 @@ export default function App() {
     if (picked) j.attach(Array.isArray(picked) ? picked : [picked]);
   };
 
-  // First run: ask for the API key.
+  // First run: walk through setup (voice key, research helper, ChatGPT sign-in).
+  const [showSetup, setShowSetup] = useState(false);
+  const [setupDone, setSetupDone] = useState(true);
+  const setupChecked = useRef(false);
+  const checkSetup = async (open: boolean) => {
+    const codex = await invoke<CodexStatus>("codex_status").catch(() => null);
+    const done = !!j.settings?.geminiApiKey && !!codex?.found && !!codex?.loggedIn;
+    setSetupDone(done);
+    if (open && !done) setShowSetup(true);
+  };
   useEffect(() => {
-    if (j.settings && !j.settings.geminiApiKey) setShowSettings(true);
-  }, [j.settings?.geminiApiKey]);
+    if (!j.settings || setupChecked.current) return;
+    setupChecked.current = true;
+    checkSetup(true);
+  }, [j.settings]);
+
+  // A routine the voice just made or changed opens on the Routines page.
+  useEffect(() => {
+    if (j.focusRoutine) setPage("routines");
+  }, [j.focusRoutine]);
 
   useEffect(() => {
     const el = transcriptRef.current;
@@ -154,7 +174,13 @@ export default function App() {
     }
     return t;
   })();
-  const reportTask = openTask && openTask.kind !== "document" ? openTask : undefined;
+  const reportTask = openTask && openTask.kind !== "document" && openTask.kind !== "skill" ? openTask : undefined;
+  // Know-how opens on its own page, where it can be reviewed and saved.
+  useEffect(() => {
+    if (openTask?.kind !== "skill") return;
+    j.setReportId(null);
+    setPage("knowhow");
+  }, [openTask?.id]);
   // Whatever is open shows in the side panel, in place of the Worker tasks pane.
   const panelTask = docTask ?? reportTask;
   const closePanel = () => j.setReportId(null);
@@ -383,6 +409,38 @@ export default function App() {
               </svg>
               Briefings
             </button>
+            <button
+              className={`navitem ${page === "routines" && !docTask ? "on" : ""}`}
+              onClick={() => {
+                closePanel();
+                setPage("routines");
+              }}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-2.1-5L14 10h7V3l-2.6 2.6A9 9 0 0 0 12 3z" />
+              </svg>
+              Routines
+            </button>
+            <button
+              className={`navitem ${page === "knowhow" && !docTask ? "on" : ""}`}
+              onClick={() => {
+                closePanel();
+                setPage("knowhow");
+              }}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m12 2 2.9 6.2 6.6.8-4.9 4.6 1.3 6.6L12 16.9l-5.9 3.3 1.3-6.6-4.9-4.6 6.6-.8z" />
+              </svg>
+              Know-how
+            </button>
+            {!setupDone && (
+              <button className="navitem setup-nav" onClick={() => setShowSetup(true)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm-1 5v7h2V7zm0 9v2h2v-2z" />
+                </svg>
+                Finish setting up
+              </button>
+            )}
           </nav>
           <div className="shortcuts">
             <div className="label">Shortcuts</div>
@@ -417,6 +475,18 @@ export default function App() {
             onOpenFile={() => j.openFiles().catch((e) => j.setError(String(e)))}
             onClose={() => setPage("chat")}
           />
+        ) : page === "routines" ? (
+          <RoutinesPage
+            chatId={j.chatId}
+            apiKey={j.settings?.geminiApiKey ?? ""}
+            tasks={j.tasks}
+            focusId={j.focusRoutine}
+            onFocused={() => j.setFocusRoutine(null)}
+            onOpenTask={j.setReportId}
+            onClose={() => setPage("chat")}
+          />
+        ) : page === "knowhow" ? (
+          <KnowHowPage tasks={j.tasks} onClose={() => setPage("chat")} />
         ) : page === "briefings" ? (
           <BriefingsPage chatId={j.chatId} onOpenTask={j.setReportId} onClose={() => setPage("chat")} />
         ) : page === "search" ? (
@@ -587,6 +657,21 @@ export default function App() {
             <span>Images are attached for Jarvis. Word, Markdown and text files open in the editor.</span>
           </div>
         </div>
+      )}
+
+      {showSetup && j.settings && (
+        <SetupPanel
+          settings={j.settings}
+          onSaved={() => j.reloadSettings()}
+          onClose={() => {
+            setShowSetup(false);
+            checkSetup(false);
+          }}
+          onAdvanced={() => {
+            setShowSetup(false);
+            setShowSettings(true);
+          }}
+        />
       )}
 
       {showSettings && j.settings && (

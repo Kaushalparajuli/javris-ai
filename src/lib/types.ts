@@ -26,9 +26,11 @@ export interface Task {
   finishedAt: number | null;
   searches: number;
   sources: number;
-  kind: "research" | "image" | "document" | "browser";
+  kind: "research" | "image" | "document" | "browser" | "skill";
   images: string[];
   refs: string[];
+  /** For a step of a routine: the run it belongs to. */
+  routine: string;
 }
 
 export interface Settings {
@@ -134,4 +136,78 @@ export interface Briefing {
   lastRun: number | null;
   lastTask: number | null;
   nextRun: number | null;
+}
+
+export type StepKind = "research" | "write" | "inbox" | "calendar" | "email_me";
+
+export interface RoutineStep {
+  kind: StepKind;
+  /** What the step does, in plain words. */
+  text: string;
+  /** Know-how (folder names) the step follows. */
+  knowHow: string[];
+}
+
+export interface Routine {
+  id: string;
+  title: string;
+  /** What the user asked for, in their words. */
+  request: string;
+  steps: RoutineStep[];
+  repeat: "manual" | "daily" | "weekdays" | "weekly";
+  /** For weekly routines: 0 = Monday … 6 = Sunday. */
+  weekday: number;
+  /** Local time, "HH:MM". */
+  time: string;
+  depth: "quick" | "deep";
+  /** Runs on its schedule. Only possible after one successful try. */
+  enabled: boolean;
+  tried: boolean;
+  /** Send the result email without asking (it only goes to the user). */
+  autoSend: boolean;
+  chatId: string;
+  createdAt: number;
+  lastRun: number | null;
+  lastRunId: string;
+  nextRun: number | null;
+  failures: number;
+  /** Why it paused itself. Empty when it's fine. */
+  pausedReason: string;
+}
+
+export interface RunStep {
+  kind: StepKind;
+  text: string;
+  status: "waiting" | "running" | "done" | "failed" | "skipped" | "asking";
+  taskId: number | null;
+  note: string;
+}
+
+export interface Run {
+  id: string;
+  routineId: string;
+  title: string;
+  number: number;
+  status: "running" | "asking" | "done" | "failed" | "cancelled";
+  steps: RunStep[];
+  dir: string;
+  resultTask: number | null;
+  summary: string;
+  approval: { to: string; subject: string; body: string; draftId: string } | null;
+  error: string;
+  startedAt: number;
+  finishedAt: number | null;
+}
+
+export interface KnowHow {
+  slug: string;
+  name: string;
+  /** When to use it, in one sentence. */
+  description: string;
+  /** The steps to follow. */
+  body: string;
+  /** Written by Jarvis and not reviewed yet. */
+  draft: boolean;
+  updatedAt: number;
+  files: string[];
 }

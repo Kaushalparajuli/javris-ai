@@ -56,7 +56,7 @@ export default function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: nu
         </span>
       </div>
       <div className="meta">
-        #{task.id} · {task.kind === "image" ? "image" : task.kind === "document" ? "document" : task.kind === "browser" ? "browser" : task.depth === "quick" ? "quick" : "deep dive"} · {clock(task.startedAt)}
+        #{task.id} · {task.kind === "image" ? "image" : task.kind === "document" ? "document" : task.kind === "browser" ? "browser" : task.kind === "skill" ? "know-how" : task.depth === "quick" ? "quick" : "deep dive"} · {clock(task.startedAt)}
         {running ? ` · ${elapsed(task, now)}` : ""}
         {task.parentId ? ` · follow-up to #${task.parentId}` : ""}
         {task.refs?.length ? ` · ${task.refs.length} reference${task.refs.length > 1 ? "s" : ""}` : ""}

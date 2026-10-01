@@ -63,13 +63,19 @@ fn now_ms() -> u64 {
 
 /// The first scheduled moment strictly after `after`, in local time.
 pub fn next_run(b: &Briefing, after: DateTime<Local>) -> Option<DateTime<Local>> {
-    let at = NaiveTime::parse_from_str(b.time.trim(), "%H:%M").ok()?;
+    next_time(&b.repeat, b.weekday, &b.time, after)
+}
+
+/// The first moment strictly after `after` on a "daily", "weekdays" or "weekly" schedule at
+/// `time` ("HH:MM", local). Routines use the same schedules as briefings.
+pub fn next_time(repeat: &str, on_weekday: u8, time: &str, after: DateTime<Local>) -> Option<DateTime<Local>> {
+    let at = NaiveTime::parse_from_str(time.trim(), "%H:%M").ok()?;
     let mut day = after.date_naive();
     for _ in 0..9 {
         let weekday = day.weekday().num_days_from_monday() as u8;
-        let wanted = match b.repeat.as_str() {
+        let wanted = match repeat {
             "weekdays" => weekday < 5,
-            "weekly" => weekday == b.weekday,
+            "weekly" => weekday == on_weekday,
             _ => true,
         };
         // A time that doesn't exist on a clock-change day moves to the next day.
@@ -166,7 +172,7 @@ fn start(app: &AppHandle, b: &Briefing) -> Result<Task, String> {
         b.request.trim().trim_end_matches('.')
     );
     let title = format!("Briefing: {} · {}", b.title, Local::now().format("%-d %b"));
-    tasks::start_task(app.clone(), title, request, b.depth.clone(), Some(b.chat_id.clone()))
+    tasks::start_task(app.clone(), title, request, b.depth.clone(), Some(b.chat_id.clone()), None)
 }
 
 #[tauri::command]

@@ -1,0 +1,983 @@
+<title>Jarvis Agents Flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a flow stepper above one mocked Jarvis window (sidebar / main / voice pane); each step swaps the window's contents.
+   Deliberately single dark theme, matching the app's glass HUD tokens in src/styles.css. */
+:root {
+  --bg: #070b14;
+  --tint: #0c1220;
+  --pane: rgba(255,255,255,0.035);
+  --raised: rgba(255,255,255,0.07);
+  --line: rgba(255,255,255,0.1);
+  --shine: rgba(255,255,255,0.2);
+  --fg: #e3ebf3;
+  --muted: #8ea1b4;
+  --arc: #7fdcff;
+  --arc-dim: rgba(127,220,255,0.14);
+  --gold: #e3b964;
+  --gold-dim: rgba(227,185,100,0.13);
+  --ok: #6fd6a0;
+  --ok-dim: rgba(111,214,160,0.13);
+  --bad: #ff8a7a;
+  --display: "Chakra Petch", "Avenir Next Condensed", system-ui, sans-serif;
+  --body: "IBM Plex Sans", -apple-system, "Helvetica Neue", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.5 var(--body); -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--arc); outline-offset: 2px; }
+
+.wrap { max-width: 1240px; margin: 0 auto; padding: 32px 20px 56px; display: grid; gap: 22px; }
+
+header.top { display: grid; gap: 6px; }
+.eyebrow { font: 600 11px var(--display); letter-spacing: .2em; text-transform: uppercase; color: var(--arc); }
+h1 { margin: 0; font: 600 clamp(24px, 3.4vw, 34px)/1.15 var(--display); letter-spacing: .02em; text-wrap: balance; }
+.lede { margin: 0; color: var(--muted); max-width: 68ch; }
+
+/* stepper */
+.steps { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 0; padding: 0; counter-reset: s; }
+.steps button { display: flex; align-items: center; gap: 9px; padding: 8px 14px 8px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--pane); color: var(--muted); font-size: 13px; transition: border-color .15s, color .15s, background .15s; }
+.steps button b { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: var(--raised); font: 500 11px var(--mono); color: var(--muted); }
+.steps button:hover { color: var(--fg); border-color: var(--shine); }
+.steps button[aria-current="step"] { color: var(--fg); border-color: rgba(127,220,255,.45); background: var(--arc-dim); }
+.steps button[aria-current="step"] b { background: var(--arc); color: #06121c; }
+.steps button.done b { background: var(--ok-dim); color: var(--ok); }
+
+.caption { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 16px; align-items: end; }
+.caption h2 { margin: 0 0 4px; font: 600 18px var(--display); letter-spacing: .03em; }
+.caption p { margin: 0; color: var(--muted); max-width: 72ch; }
+.nav { display: flex; gap: 8px; }
+.btn { height: 34px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); font-size: 13px; font-weight: 500; white-space: nowrap; }
+.btn:hover { border-color: var(--shine); }
+.btn.primary { background: var(--arc); color: #06121c; border-color: transparent; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.gold { background: var(--gold); color: #1a1204; border-color: transparent; }
+.btn.ghost { background: transparent; }
+.btn:disabled { opacity: .35; cursor: default; }
+
+/* the mocked window */
+.win { position: relative; border-radius: 16px; border: 1px solid var(--line); background: var(--tint); overflow: hidden; box-shadow: 0 30px 80px -30px rgba(0,0,0,.8); isolation: isolate; }
+.aura { position: absolute; inset: 0; pointer-events: none; z-index: -1; overflow: hidden; }
+.aura i { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .28; }
+.aura i:nth-child(1) { width: 460px; height: 460px; left: -120px; top: -180px; background: #1f6fff; }
+.aura i:nth-child(2) { width: 380px; height: 380px; right: -90px; top: 180px; background: #00c2d8; opacity: .18; }
+.aura i:nth-child(3) { width: 420px; height: 420px; left: 40%; bottom: -260px; background: #8a4dff; opacity: .22; }
+.titlebar { height: 42px; display: flex; align-items: center; gap: 14px; padding: 0 14px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.02); }
+.lights { display: flex; gap: 7px; }
+.lights i { width: 11px; height: 11px; border-radius: 50%; background: #ff5f57; }
+.lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+.brand { font: 600 11px var(--display); letter-spacing: .2em; text-transform: uppercase; color: var(--muted); }
+.conn { margin-left: auto; display: flex; gap: 14px; font: 11.5px var(--mono); color: var(--muted); }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.dot.busy { background: var(--gold); box-shadow: 0 0 8px var(--gold); }
+
+.panes { display: grid; grid-template-columns: 196px minmax(0,1fr) 300px; min-height: 600px; }
+.sidebar { border-right: 1px solid var(--line); padding: 14px 10px; display: flex; flex-direction: column; gap: 2px; }
+.sidebar .grp { font: 600 10px var(--display); letter-spacing: .18em; text-transform: uppercase; color: var(--muted); padding: 12px 10px 6px; }
+.sidebar .item { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 9px; color: var(--muted); font-size: 13px; }
+.sidebar .item svg { width: 15px; height: 15px; fill: currentColor; flex: none; }
+.sidebar .item.on { background: var(--raised); color: var(--fg); }
+.sidebar .new { margin-left: auto; font: 500 9.5px var(--mono); letter-spacing: .06em; color: var(--arc); border: 1px solid rgba(127,220,255,.3); border-radius: 5px; padding: 0 5px; }
+
+.main { min-width: 0; padding: 20px 22px 24px; display: grid; align-content: start; gap: 16px; }
+.main-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.main-head h3 { margin: 0; font: 600 16px var(--display); letter-spacing: .03em; }
+.main-head .sub { color: var(--muted); font-size: 12.5px; }
+.main-head .actions { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; }
+
+.voice { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; }
+.voice-head { padding: 14px 16px 10px; font: 600 10px var(--display); letter-spacing: .18em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; }
+.voice-head span { margin-left: auto; font: 11px var(--mono); letter-spacing: 0; text-transform: none; }
+.orb { margin: 6px auto 12px; width: 92px; height: 92px; border-radius: 50%; background: radial-gradient(circle at 38% 34%, #d8f6ff 0, #7fdcff 18%, #2a6fd8 52%, #0d1f45 78%); box-shadow: 0 0 40px rgba(127,220,255,.35), inset 0 0 20px rgba(255,255,255,.2); }
+@media (prefers-reduced-motion: no-preference) { .orb { animation: breathe 3.2s ease-in-out infinite; } }
+@keyframes breathe { 50% { transform: scale(1.05); box-shadow: 0 0 56px rgba(127,220,255,.5), inset 0 0 20px rgba(255,255,255,.25); } }
+.transcript { padding: 0 14px 16px; display: grid; gap: 10px; align-content: start; }
+.msg { display: grid; gap: 3px; }
+.msg .who { font: 500 10.5px var(--mono); color: var(--muted); letter-spacing: .04em; }
+.msg p { margin: 0; padding: 9px 12px; border-radius: 12px; background: var(--pane); border: 1px solid var(--line); font-size: 13px; }
+.msg.me p { background: var(--arc-dim); border-color: rgba(127,220,255,.22); }
+.msg.tool p { font: 11.5px/1.5 var(--mono); color: var(--muted); background: transparent; border-style: dashed; }
+.msg.tool p b { color: var(--arc); font-weight: 500; }
+
+/* shared bits */
+.panel { border: 1px solid var(--line); border-radius: 12px; background: var(--pane); }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--raised); font: 11.5px var(--mono); color: var(--fg); white-space: nowrap; }
+.chip.arc { color: var(--arc); border-color: rgba(127,220,255,.3); background: var(--arc-dim); }
+.chip.gold { color: var(--gold); border-color: rgba(227,185,100,.3); background: var(--gold-dim); }
+.chip.ok { color: var(--ok); border-color: rgba(111,214,160,.3); background: var(--ok-dim); }
+.chip.dim { color: var(--muted); }
+.label { font: 600 10px var(--display); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+.row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* 1: skill draft */
+.draft { display: grid; grid-template-columns: minmax(0,1fr) 220px; gap: 14px; }
+.skillmd { padding: 16px 18px; font: 12.5px/1.65 var(--mono); color: var(--fg); overflow-x: auto; user-select: text; }
+.skillmd .fm { color: var(--muted); }
+.skillmd .k { color: var(--arc); }
+.skillmd .h { color: var(--gold); }
+.skillmd pre { margin: 0; white-space: pre-wrap; }
+.meta { padding: 14px; display: grid; gap: 14px; align-content: start; }
+.meta .files { display: grid; gap: 6px; font: 12px var(--mono); color: var(--muted); }
+.meta .files div::before { content: "▸ "; color: var(--arc); }
+.from { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
+.from b { color: var(--fg); font-weight: 500; }
+
+/* 2: library */
+.lib { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.skill { padding: 14px; display: grid; gap: 10px; align-content: start; }
+.skill h4 { margin: 0; font: 500 13.5px var(--mono); color: var(--fg); }
+.skill p { margin: 0; color: var(--muted); font-size: 12.5px; }
+.skill .foot { display: flex; justify-content: space-between; gap: 8px; font: 11px var(--mono); color: var(--muted); border-top: 1px solid var(--line); padding-top: 9px; }
+.skill.fresh { border-color: rgba(127,220,255,.4); box-shadow: 0 0 0 3px var(--arc-dim); }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.filters span { font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.filters span.on { color: var(--fg); background: var(--raised); }
+
+/* 3: agent editor */
+.agent { display: grid; grid-template-columns: minmax(0,1.2fr) minmax(0,1fr); gap: 14px; }
+.form { padding: 16px; display: grid; gap: 14px; align-content: start; }
+.field { display: grid; gap: 6px; }
+.input { min-height: 34px; padding: 7px 11px; border-radius: 9px; border: 1px solid var(--line); background: rgba(0,0,0,.2); font-size: 13px; color: var(--fg); }
+.input.area { min-height: 84px; line-height: 1.55; color: #c9d6e2; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.tools { padding: 16px; display: grid; gap: 4px; align-content: start; }
+.tool { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.tool:last-child { border-bottom: 0; }
+.tool div { display: grid; gap: 1px; font-size: 13px; min-width: 0; }
+.tool small { color: var(--muted); font-size: 11.5px; }
+.sw { width: 34px; height: 20px; border-radius: 999px; background: var(--raised); border: 1px solid var(--line); position: relative; }
+.sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--muted); }
+.sw.on { background: var(--arc); border-color: transparent; }
+.sw.on::after { left: 16px; background: #06121c; }
+.gate { font: 500 10.5px var(--mono); color: var(--gold); border: 1px solid rgba(227,185,100,.35); border-radius: 6px; padding: 2px 7px; white-space: nowrap; }
+
+/* 4: pipeline builder */
+.builder { display: grid; grid-template-columns: minmax(0,1fr) 230px; gap: 14px; }
+.chain { display: grid; gap: 0; }
+.node { position: relative; display: grid; grid-template-columns: 30px minmax(0,1fr); gap: 12px; padding-bottom: 14px; }
+.node:last-child { padding-bottom: 0; }
+.node::before { content: ""; position: absolute; left: 14px; top: 30px; bottom: 0; width: 2px; background: linear-gradient(var(--line), var(--line)); }
+.node:last-child::before { display: none; }
+.node .n { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--line); background: var(--raised); font: 500 12px var(--mono); color: var(--muted); z-index: 1; }
+.card { padding: 12px 14px; display: grid; gap: 8px; min-width: 0; }
+.card .t { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.card .t b { font: 500 13.5px var(--mono); }
+.card .io { font: 11.5px/1.6 var(--mono); color: var(--muted); overflow-x: auto; }
+.card .io span { color: var(--arc); }
+.node.gate-node .n { border-color: rgba(227,185,100,.4); color: var(--gold); background: var(--gold-dim); }
+.node.gate-node .card { border-color: rgba(227,185,100,.3); border-style: dashed; }
+.add { justify-self: start; margin-left: 42px; }
+.side { padding: 14px; display: grid; gap: 14px; align-content: start; }
+.side .kv { display: grid; gap: 4px; font-size: 12.5px; }
+.side .kv code { font: 12px var(--mono); color: var(--fg); background: rgba(0,0,0,.25); border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; }
+
+/* 5: run */
+.run { display: grid; gap: 14px; }
+.progress { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 8px; }
+.seg { display: grid; gap: 6px; }
+.seg i { height: 4px; border-radius: 4px; background: var(--raised); }
+.seg.done i { background: var(--ok); }
+.seg.live i { background: linear-gradient(90deg, var(--gold) 0 60%, var(--raised) 60%); }
+.seg span { font: 11px var(--mono); color: var(--muted); }
+.seg.done span { color: var(--ok); } .seg.live span { color: var(--gold); }
+.log { padding: 4px 0; }
+.logrow { display: grid; grid-template-columns: 22px minmax(0,1fr) auto; gap: 10px; align-items: start; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.logrow:last-child { border-bottom: 0; }
+.logrow .st { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; margin-top: 1px; }
+.logrow.done .st { background: var(--ok-dim); color: var(--ok); }
+.logrow.wait .st { background: var(--gold-dim); color: var(--gold); }
+.logrow.todo .st { background: var(--raised); color: var(--muted); }
+.logrow div { display: grid; gap: 2px; min-width: 0; }
+.logrow b { font: 500 13px var(--mono); }
+.logrow small { color: var(--muted); font-size: 12px; }
+.logrow time { font: 11px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.approve { padding: 16px; border-color: rgba(227,185,100,.4); background: linear-gradient(180deg, var(--gold-dim), transparent 70%); display: grid; gap: 12px; }
+.approve h4 { margin: 0; font: 600 14px var(--display); letter-spacing: .03em; color: var(--gold); }
+.mail { border: 1px solid var(--line); border-radius: 10px; background: rgba(0,0,0,.25); padding: 12px 14px; display: grid; gap: 6px; font-size: 12.5px; user-select: text; }
+.mail .hd { font: 11.5px var(--mono); color: var(--muted); }
+.mail .hd b { color: var(--fg); font-weight: 500; }
+.approve .row .btn { height: 32px; }
+.resolved { font: 12px var(--mono); color: var(--ok); }
+
+/* the whole-flow map under the window */
+.map { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 10px; }
+.map div { padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--pane); display: grid; gap: 4px; align-content: start; }
+.map b { font: 600 12px var(--display); letter-spacing: .06em; }
+.map small { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.map .who { font: 10.5px var(--mono); color: var(--arc); }
+
+/* mode switch */
+.top-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; justify-content: space-between; }
+.mode { display: inline-flex; padding: 3px; border-radius: 12px; border: 1px solid var(--line); background: var(--pane); }
+.mode button { height: 32px; padding: 0 14px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 500; }
+.mode button[aria-pressed="true"] { background: var(--raised); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); }
+.mode button small { display: block; font: 10.5px var(--mono); color: var(--muted); font-weight: 400; margin-top: -3px; }
+.mode button { height: auto; padding: 6px 16px; text-align: left; }
+
+/* simple mode */
+.hello { display: grid; gap: 4px; }
+.hello h3 { margin: 0; font: 600 20px var(--display); letter-spacing: .02em; text-wrap: balance; }
+.hello p { margin: 0; color: var(--muted); max-width: 60ch; }
+
+.setup { display: grid; gap: 10px; max-width: 640px; }
+.srow { display: grid; grid-template-columns: 34px minmax(0,1fr) auto; gap: 14px; align-items: center; padding: 14px 16px; }
+.srow .n { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--line); background: var(--raised); font: 500 13px var(--mono); color: var(--muted); }
+.srow.ok .n { background: var(--ok-dim); border-color: rgba(111,214,160,.35); color: var(--ok); }
+.srow div { display: grid; gap: 2px; min-width: 0; }
+.srow b { font-weight: 500; }
+.srow small { color: var(--muted); font-size: 12.5px; }
+.srow .state { font: 12px var(--mono); color: var(--ok); white-space: nowrap; }
+.srow a { color: var(--arc); }
+.ready { max-width: 640px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; color: var(--muted); font-size: 13px; }
+
+.ask { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 8px 8px 8px 16px; border-radius: 14px; border: 1px solid rgba(127,220,255,.35); background: rgba(0,0,0,.22); box-shadow: 0 0 0 4px var(--arc-dim); }
+.ask span { font-size: 15px; color: var(--fg); min-width: 0; }
+.ask span em { color: var(--muted); font-style: normal; }
+.mic { width: 40px; height: 40px; border-radius: 50%; border: 0; background: var(--arc); display: grid; place-items: center; }
+.mic svg { width: 18px; height: 18px; fill: #06121c; }
+.tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+.tpl { text-align: left; padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--pane); display: grid; gap: 8px; align-content: start; transition: border-color .15s, background .15s; }
+.tpl:hover { border-color: rgba(127,220,255,.4); background: var(--arc-dim); }
+.tpl .ic { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; background: var(--raised); }
+.tpl .ic svg { width: 16px; height: 16px; fill: var(--arc); }
+.tpl b { font-weight: 500; font-size: 14px; }
+.tpl small { color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.tpl .q { font: 11px var(--mono); color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; }
+
+.recipe { max-width: 660px; padding: 20px 22px; display: grid; gap: 16px; border-color: rgba(127,220,255,.25); }
+.recipe .when { font: 600 15px var(--display); letter-spacing: .02em; }
+.recipe ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.recipe li { display: grid; grid-template-columns: 26px minmax(0,1fr); gap: 12px; align-items: start; }
+.recipe li .n { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--raised); font: 500 12px var(--mono); color: var(--muted); }
+.recipe li p { margin: 2px 0 0; font-size: 14px; }
+.recipe li small { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.recipe mark { background: var(--arc-dim); color: var(--arc); border-radius: 4px; padding: 0 4px; }
+.lvl { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.lvl.look { background: var(--ok); } .lvl.prep { background: var(--gold); } .lvl.act { background: var(--bad); }
+.recipe .facts { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 14px; }
+.recipe .facts b { color: var(--fg); font-weight: 500; }
+.recipe .acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.recipe .acts .hint { font-size: 12px; color: var(--muted); }
+.legend { max-width: 660px; display: flex; flex-wrap: wrap; gap: 18px; font-size: 12.5px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.adv-link { max-width: 660px; font-size: 12.5px; color: var(--muted); }
+.adv-link button { border: 0; background: none; padding: 0; color: var(--arc); text-decoration: underline; text-underline-offset: 3px; }
+
+.friendly { max-width: 660px; display: grid; gap: 8px; }
+.friendly .line { font-size: 15px; }
+.friendly .bar { height: 6px; border-radius: 6px; background: var(--raised); overflow: hidden; }
+.friendly .bar i { display: block; height: 100%; width: 88%; background: linear-gradient(90deg, var(--arc), var(--ok)); border-radius: 6px; transition: width .4s; }
+.result { max-width: 660px; padding: 18px 20px; display: grid; gap: 12px; }
+.result h4 { margin: 0; font: 600 16px var(--display); letter-spacing: .02em; }
+.result .doc { border: 1px solid var(--line); border-radius: 10px; background: rgba(0,0,0,.22); padding: 14px 16px; display: grid; gap: 6px; font-size: 13px; user-select: text; }
+.result .doc b { font-weight: 600; }
+.result .doc ul { margin: 0; padding-left: 18px; color: #c9d6e2; display: grid; gap: 3px; }
+.ask-card { max-width: 660px; padding: 16px 20px; display: grid; gap: 12px; border-color: rgba(227,185,100,.4); background: linear-gradient(180deg, var(--gold-dim), transparent 75%); }
+.ask-card p { margin: 0; font-size: 14px; }
+.ask-card label { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--muted); }
+.ask-card .done { font-size: 14px; color: var(--ok); }
+details.more { max-width: 660px; font-size: 12.5px; color: var(--muted); }
+details.more summary { cursor: pointer; color: var(--arc); }
+details.more ul { margin: 8px 0 0; padding-left: 18px; font: 12px/1.7 var(--mono); }
+
+.routines { display: grid; gap: 10px; max-width: 760px; }
+.rt { display: grid; grid-template-columns: 38px minmax(0,1fr) auto; gap: 14px; align-items: center; padding: 14px 16px; }
+.rt .ic { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; background: var(--raised); }
+.rt .ic svg { width: 17px; height: 17px; fill: var(--arc); }
+.rt div.txt { display: grid; gap: 2px; min-width: 0; }
+.rt b { font-weight: 500; }
+.rt small { color: var(--muted); font-size: 12.5px; }
+.rt.paused { border-color: rgba(255,138,122,.35); }
+.rt.paused .ic svg { fill: var(--bad); }
+.rt .err { color: var(--bad); }
+.rt .right { display: flex; gap: 10px; align-items: center; }
+.pill { font: 11px var(--mono); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.pill.on { color: var(--ok); background: var(--ok-dim); }
+.pill.off { color: var(--bad); background: rgba(255,138,122,.12); }
+.remember { max-width: 760px; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 12px; align-items: center; padding: 14px 16px; border-color: rgba(127,220,255,.35); background: var(--arc-dim); }
+.remember p { margin: 0; font-size: 13.5px; }
+.remember .row { flex-wrap: nowrap; }
+.knows { max-width: 760px; display: grid; gap: 8px; }
+.knows .row { gap: 8px; }
+.knows .chip { height: 28px; font-family: var(--body); font-size: 12.5px; }
+
+@media (max-width: 1020px) {
+  .panes { grid-template-columns: minmax(0,1fr) 280px; }
+  .sidebar { display: none; }
+  .map { grid-template-columns: repeat(2, minmax(0,1fr)); }
+}
+@media (max-width: 760px) {
+  .panes { grid-template-columns: minmax(0,1fr); }
+  .voice { border-left: 0; border-top: 1px solid var(--line); }
+  .draft, .agent, .builder { grid-template-columns: minmax(0,1fr); }
+  .caption { grid-template-columns: minmax(0,1fr); }
+  .conn span:first-child { display: none; }
+  .main { padding: 16px 14px 20px; }
+  .progress { grid-template-columns: repeat(2, minmax(0,1fr)); }
+}
+@media (max-width: 760px) {
+  .rt, .srow { grid-template-columns: 34px minmax(0,1fr); }
+  .rt .right, .srow > :last-child { grid-column: 2; }
+  .remember { grid-template-columns: minmax(0,1fr); }
+}
+@media (max-width: 460px) { .map { grid-template-columns: minmax(0,1fr); } .two { grid-template-columns: 1fr; } .remember .row { flex-wrap: wrap; } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="eyebrow">Jarvis · proposed feature</div>
+    <div class="top-row">
+      <h1>Routines Jarvis runs for you</h1>
+      <div class="mode" role="group" aria-label="Mode">
+        <button data-mode="simple" aria-pressed="true">Simple<small>for everyone</small></button>
+        <button data-mode="advanced" aria-pressed="false">Advanced<small>skills · agents · pipelines</small></button>
+      </div>
+    </div>
+    <p class="lede" id="lede"></p>
+  </header>
+
+  <ol class="steps" id="steps"></ol>
+
+  <div class="caption">
+    <div>
+      <h2 id="cap-title"></h2>
+      <p id="cap-text"></p>
+    </div>
+    <div class="nav">
+      <button class="btn ghost" id="prev">Back</button>
+      <button class="btn primary" id="next">Next</button>
+    </div>
+  </div>
+
+  <div class="win">
+    <div class="aura"><i></i><i></i><i></i></div>
+    <div class="titlebar">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div class="brand">Jarvis</div>
+      <div class="conn"><span><i class="dot"></i>Gemini Live</span><span id="conn-codex"><i class="dot"></i>Codex ready</span></div>
+    </div>
+    <div class="panes">
+      <nav class="sidebar" aria-label="Jarvis sections">
+        <div class="item"><svg viewBox="0 0 16 16"><path d="M2 3h12v8H6l-4 3z"/></svg>Chats</div>
+        <div class="item"><svg viewBox="0 0 16 16"><path d="M3 3h10v2H3zm0 4h10v2H3zm0 4h7v2H3z"/></svg>Tasks</div>
+        <div class="item"><svg viewBox="0 0 16 16"><path d="M4 1h6l3 3v11H4zM9 2v3h3"/></svg>Documents</div>
+        <div class="grp">Automation</div>
+        <div class="item" data-nav="routines" data-show="simple"><svg viewBox="0 0 16 16"><path d="M8 1a7 7 0 1 0 7 7h-2a5 5 0 1 1-1.5-3.5L9 7h6V1l-2.1 2.1A7 7 0 0 0 8 1z"/></svg>Routines<span class="new">NEW</span></div>
+        <div class="item" data-nav="knowhow" data-show="simple"><svg viewBox="0 0 16 16"><path d="M8 1l2 4 4.5.7-3.2 3.1.8 4.5L8 11.2 3.9 13.3l.8-4.5L1.5 5.7 6 5z"/></svg>Know-how</div>
+        <div class="item" data-nav="skills" data-show="advanced"><svg viewBox="0 0 16 16"><path d="M8 1l2 4 4.5.7-3.2 3.1.8 4.5L8 11.2 3.9 13.3l.8-4.5L1.5 5.7 6 5z"/></svg>Skills<span class="new">NEW</span></div>
+        <div class="item" data-nav="agents" data-show="advanced"><svg viewBox="0 0 16 16"><circle cx="8" cy="5" r="3"/><path d="M2 15c0-3.3 2.7-5 6-5s6 1.7 6 5z"/></svg>Agents<span class="new">NEW</span></div>
+        <div class="item" data-nav="pipelines" data-show="advanced"><svg viewBox="0 0 16 16"><circle cx="3" cy="3" r="2"/><circle cx="13" cy="8" r="2"/><circle cx="3" cy="13" r="2"/><path d="M4.5 4l7 3.3v1.4l-7 3.3-.7-1.3L10 8 3.8 5.3z"/></svg>Pipelines<span class="new">NEW</span></div>
+      </nav>
+
+      <main class="main">
+        <!-- SIMPLE 1. First-run setup -->
+        <section data-screen="s0">
+          <div class="hello">
+            <h3>Let's get Jarvis ready</h3>
+            <p>Three quick steps. You only do this once.</p>
+          </div>
+          <div class="setup">
+            <div class="panel srow ok"><span class="n">✓</span>
+              <div><b>Turn on Jarvis's voice</b><small>Google Gemini key added. <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">How do I get one?</a></small></div>
+              <span class="state">Done</span></div>
+            <div class="panel srow" id="set-2"><span class="n">2</span>
+              <div><b>Install the research helper</b><small>Jarvis uses it to read the web and write reports. About 1 minute.</small></div>
+              <button class="btn primary" data-set="2">Install</button></div>
+            <div class="panel srow" id="set-3"><span class="n">3</span>
+              <div><b>Connect your ChatGPT account</b><small>Research runs on your ChatGPT plan. A sign-in window opens in your browser.</small></div>
+              <button class="btn" data-set="3">Connect</button></div>
+          </div>
+          <div class="ready" id="ready" hidden>
+            <span>All set. Jarvis can research, write and run routines for you.</span>
+            <button class="btn primary" data-go="s1">Make my first routine</button>
+          </div>
+        </section>
+
+        <!-- SIMPLE 2. Describe it or pick a template -->
+        <section data-screen="s1" hidden>
+          <div class="hello">
+            <h3>What should Jarvis do for you?</h3>
+            <p>Say it the way you'd ask a person. Jarvis figures out the steps.</p>
+          </div>
+          <div class="ask">
+            <span>Every Monday morning, check my competitors and email me a short summary<em> …</em></span>
+            <button class="mic" aria-label="Speak" data-go="s2"><svg viewBox="0 0 16 16"><path d="M8 1a2.5 2.5 0 0 0-2.5 2.5v4a2.5 2.5 0 0 0 5 0v-4A2.5 2.5 0 0 0 8 1zm-5 6.5h1.5a3.5 3.5 0 0 0 7 0H13a5 5 0 0 1-4.25 4.94V15h-1.5v-2.56A5 5 0 0 1 3 7.5z"/></svg></button>
+          </div>
+          <span class="label">Or start from one of these</span>
+          <div class="tpl-grid">
+            <button class="tpl" data-go="s2">
+              <span class="ic"><svg viewBox="0 0 16 16"><path d="M1 13l4-5 3 3 3-5 4 7z"/></svg></span>
+              <b>Weekly competitor watch</b><small>Prices and news from companies you name, compared with last week.</small>
+              <span class="q">Asks: which companies?</span></button>
+            <button class="tpl" data-go="s2">
+              <span class="ic"><svg viewBox="0 0 16 16"><path d="M1 3h14v10H1zm1.5 1.5v.3L8 9l5.5-4.2v-.3z"/></svg></span>
+              <b>Morning inbox digest</b><small>What came in overnight, sorted into reply today, this week, or skip.</small>
+              <span class="q">Asks: what time?</span></button>
+            <button class="tpl" data-go="s2">
+              <span class="ic"><svg viewBox="0 0 16 16"><path d="M3 2h1V1h2v1h4V1h2v1h1a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm0 4v8h10V6z"/></svg></span>
+              <b>Meeting prep</b><small>30 minutes before a call: who's attending, past emails, open questions.</small>
+              <span class="q">Asks: nothing</span></button>
+            <button class="tpl" data-go="s2">
+              <span class="ic"><svg viewBox="0 0 16 16"><path d="M9 1l6 6-8 8-6-6V1zM4.5 3.5a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/></svg></span>
+              <b>Price drop tracker</b><small>Checks a product page daily and tells you when the price falls.</small>
+              <span class="q">Asks: which link, what price?</span></button>
+            <button class="tpl" data-go="s2">
+              <span class="ic"><svg viewBox="0 0 16 16"><path d="M1 3h5l1.5 2H15v8H1z"/></svg></span>
+              <b>Summarize a folder</b><small>Reads every document in a folder and writes one short overview.</small>
+              <span class="q">Asks: which folder?</span></button>
+            <button class="tpl" data-go="s2">
+              <span class="ic"><svg viewBox="0 0 16 16"><path d="M2 2h12v12H2zm2 2v2h8V4zm0 4v1h8V8zm0 3v1h5v-1z"/></svg></span>
+              <b>Weekly news on a topic</b><small>Five stories worth reading, each in two sentences, with links.</small>
+              <span class="q">Asks: which topic?</span></button>
+          </div>
+        </section>
+
+        <!-- SIMPLE 3. Recipe card -->
+        <section data-screen="s2" hidden>
+          <div class="hello">
+            <h3>Here's what I'll do</h3>
+            <p>Check it reads right. Change anything by saying it, or tap Change.</p>
+          </div>
+          <div class="panel recipe">
+            <span class="when">Every Monday at 8:00 AM, I'll:</span>
+            <ol>
+              <li><span class="n">1</span><div><p>Look up prices and news for Pinecone, Weaviate, Qdrant and <mark>Milvus</mark></p><small><i class="lvl look"></i>Looks things up</small></div></li>
+              <li><span class="n">2</span><div><p>Compare them with last week and note what changed</p><small><i class="lvl look"></i>Looks things up</small></div></li>
+              <li><span class="n">3</span><div><p>Write a one-page summary in your document style</p><small><i class="lvl prep"></i>Prepares something</small></div></li>
+              <li><span class="n">4</span><div><p>Email the summary to you. <b>I'll ask you before sending.</b></p><small><i class="lvl act"></i>Acts for you, always asks first</small></div></li>
+            </ol>
+            <div class="facts"><span>Takes about <b>10 minutes</b></span><span>Detail <b>Thorough</b></span><span>Results in <b>Documents › Competitor watch</b></span></div>
+            <div class="acts">
+              <button class="btn primary" data-go="s3">Try it once now</button>
+              <button class="btn">Change something</button>
+              <span class="hint">You can turn it on after the first try.</span>
+            </div>
+          </div>
+          <div class="legend">
+            <span><i class="lvl look"></i>Looks things up</span>
+            <span><i class="lvl prep"></i>Prepares drafts and documents</span>
+            <span><i class="lvl act"></i>Sends, posts or books. Always asks first.</span>
+          </div>
+          <div class="adv-link">Want to fine-tune each step? <button data-open-adv="a3">Open in the advanced editor</button></div>
+        </section>
+
+        <!-- SIMPLE 4. Try it once: result first, then the approval -->
+        <section data-screen="s3" hidden>
+          <div class="friendly">
+            <span class="line" id="try-line">Almost done. Step 4 of 4, waiting for you.</span>
+            <div class="bar"><i id="try-bar"></i></div>
+          </div>
+          <div class="panel result">
+            <h4>Your competitor summary is ready</h4>
+            <div class="doc">
+              <b>Competitor watch · week 40</b>
+              <ul>
+                <li>Pinecone made its Starter plan free, capped at 2 GB.</li>
+                <li>Weaviate launched a pay-as-you-go option.</li>
+                <li>Qdrant and Milvus had no price changes.</li>
+              </ul>
+            </div>
+            <div class="row"><button class="btn">Open</button><button class="btn">Ask Jarvis about it</button><button class="btn ghost">Share</button></div>
+          </div>
+          <div class="panel ask-card" id="ask-card">
+            <p>Jarvis wants to email you this summary. Send it?</p>
+            <div class="row">
+              <button class="btn gold" id="s-send">Send</button>
+              <button class="btn">Change it</button>
+              <button class="btn ghost" id="s-skip">Don't send</button>
+            </div>
+            <label for="dont-ask"><input type="checkbox" id="dont-ask"> Don't ask again for emails sent only to me</label>
+          </div>
+          <details class="more">
+            <summary>Details</summary>
+            <ul>
+              <li>Looked up 4 companies, 19 sources (9 min)</li>
+              <li>Compared with last week's summary (1 min)</li>
+              <li>Wrote summary.docx (under 1 min)</li>
+            </ul>
+          </details>
+        </section>
+
+        <!-- SIMPLE 5. Routines home -->
+        <section data-screen="s4" hidden>
+          <div class="hello">
+            <h3>Your routines</h3>
+            <p>Jarvis runs these for you and tells you when something needs you.</p>
+          </div>
+          <div class="panel remember" id="remember">
+            <p>That went well. Want me to remember how I did it, so similar requests are faster next time?</p>
+            <div class="row"><button class="btn primary" id="rem-yes">Yes, remember</button><button class="btn ghost" id="rem-no">No thanks</button></div>
+          </div>
+          <div class="routines">
+            <div class="panel rt">
+              <span class="ic"><svg viewBox="0 0 16 16"><path d="M1 13l4-5 3 3 3-5 4 7z"/></svg></span>
+              <div class="txt"><b>Weekly competitor watch</b><small>Next: Monday 8:00 AM · Last summary ready today</small></div>
+              <div class="right"><span class="pill on">On</span><span class="sw on"></span></div>
+            </div>
+            <div class="panel rt">
+              <span class="ic"><svg viewBox="0 0 16 16"><path d="M1 3h14v10H1zm1.5 1.5v.3L8 9l5.5-4.2v-.3z"/></svg></span>
+              <div class="txt"><b>Morning inbox digest</b><small>Weekdays 7:30 AM · 12 emails sorted this morning</small></div>
+              <div class="right"><span class="pill on">On</span><span class="sw on"></span></div>
+            </div>
+            <div class="panel rt paused">
+              <span class="ic"><svg viewBox="0 0 16 16"><path d="M3 2h1V1h2v1h4V1h2v1h1a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm0 4v8h10V6z"/></svg></span>
+              <div class="txt"><b>Meeting prep</b><small class="err">Paused. Jarvis couldn't open your calendar twice in a row.</small></div>
+              <div class="right"><button class="btn">Reconnect calendar</button></div>
+            </div>
+          </div>
+          <div class="knows">
+            <span class="label">Things Jarvis knows how to do</span>
+            <div class="row" id="knows">
+              <span class="chip">Sort my inbox</span>
+              <span class="chip">My document style</span>
+              <span class="chip">Check sources</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 1. Jarvis drafts a skill -->
+        <section data-screen="a0">
+          <div class="main-head">
+            <h3>competitor-scan</h3>
+            <span class="chip arc">Draft · written by Jarvis</span>
+            <div class="actions">
+              <button class="btn ghost">Discard</button>
+              <button class="btn">Edit</button>
+              <button class="btn primary" data-go="a1">Save skill</button>
+            </div>
+          </div>
+          <div class="draft">
+            <div class="panel skillmd"><pre><span class="fm">---</span>
+<span class="k">name:</span> competitor-scan
+<span class="k">description:</span> Survey a product's direct competitors and
+  compare pricing, features and positioning in one table.
+<span class="fm">---</span>
+
+<span class="h"># How to run a competitor scan</span>
+
+1. Find 4–6 direct competitors. Prefer the vendor's own
+   pricing page over review sites.
+2. For each one, record: plan names, monthly price,
+   free tier, top 3 features, target customer.
+3. Fill templates/comparison.md. Leave a cell blank rather
+   than guess; add a note saying why.
+4. Close with "What changed since last scan" if a previous
+   report exists in the task folder.
+
+<span class="h">## Sources</span>
+Cite every price with a link and the date you checked it.</pre></div>
+            <div class="panel meta">
+              <div class="from">
+                <span class="label">Made from</span>
+                <span><b>Task 0042</b> · Vector database comparison</span>
+                <span>Finished 26 Sep, 14 sources</span>
+              </div>
+              <div class="from">
+                <span class="label">Files</span>
+                <div class="files"><div>SKILL.md</div><div>templates/comparison.md</div></div>
+              </div>
+              <div class="from">
+                <span class="label">Saved to</span>
+                <span style="font: 11.5px var(--mono)">~/Jarvis/skills/competitor-scan/</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. Skill library -->
+        <section data-screen="a1" hidden>
+          <div class="main-head">
+            <h3>Skills</h3>
+            <span class="sub">6 skills · 2 written by Jarvis</span>
+            <div class="actions"><button class="btn">Import folder</button><button class="btn primary">New skill</button></div>
+          </div>
+          <div class="filters"><span class="on">All</span><span>By you</span><span>By Jarvis</span><span>Unused</span></div>
+          <div class="lib">
+            <article class="panel skill fresh">
+              <div class="row"><h4>competitor-scan</h4><span class="chip arc">Jarvis</span></div>
+              <p>Compare competitors' pricing, features and positioning in one table.</p>
+              <div class="foot"><span>Not used yet</span><span>Saved just now</span></div>
+            </article>
+            <article class="panel skill">
+              <div class="row"><h4>exec-brief</h4><span class="chip dim">You</span></div>
+              <p>Turn a long report into a one-page brief: summary, three findings, next steps.</p>
+              <div class="foot"><span>2 agents</span><span>Used 3d ago</span></div>
+            </article>
+            <article class="panel skill">
+              <div class="row"><h4>inbox-triage</h4><span class="chip arc">Jarvis</span></div>
+              <p>Sort unread mail into reply today, this week, or skip, with one line each.</p>
+              <div class="foot"><span>1 agent</span><span>Used today</span></div>
+            </article>
+            <article class="panel skill">
+              <div class="row"><h4>source-check</h4><span class="chip dim">You</span></div>
+              <p>Verify every claim has a primary source; flag anything older than 12 months.</p>
+              <div class="foot"><span>3 agents</span><span>Used 1d ago</span></div>
+            </article>
+            <article class="panel skill">
+              <div class="row"><h4>meeting-prep</h4><span class="chip dim">You</span></div>
+              <p>From a calendar event, pull attendee context and past threads into a prep note.</p>
+              <div class="foot"><span>1 agent</span><span>Used 5d ago</span></div>
+            </article>
+            <article class="panel skill">
+              <div class="row"><h4>docx-house-style</h4><span class="chip dim">You</span></div>
+              <p>Headings, fonts and table style for documents sent outside the team.</p>
+              <div class="foot"><span>1 agent</span><span>Used 2w ago</span></div>
+            </article>
+          </div>
+        </section>
+
+        <!-- 3. Agent editor -->
+        <section data-screen="a2" hidden>
+          <div class="main-head">
+            <h3>Market analyst</h3>
+            <span class="sub">Agent</span>
+            <div class="actions"><button class="btn">Test run</button><button class="btn primary" data-go="a3">Save agent</button></div>
+          </div>
+          <div class="agent">
+            <div class="panel form">
+              <div class="field"><span class="label">Role</span>
+                <div class="input area">You research markets for a small startup. Be concrete: prices, dates, names. Say plainly when data is missing. Write for someone deciding in five minutes.</div>
+              </div>
+              <div class="two">
+                <div class="field"><span class="label">Model</span><div class="input">gpt-5-codex</div></div>
+                <div class="field"><span class="label">Reasoning</span><div class="input">High</div></div>
+              </div>
+              <div class="field"><span class="label">Skills</span>
+                <div class="row"><span class="chip arc">competitor-scan ×</span><span class="chip arc">source-check ×</span><span class="chip dim">+ Add skill</span></div>
+              </div>
+              <div class="field"><span class="label">Produces</span>
+                <div class="row"><span class="chip">report.md</span><span class="chip">summary.txt</span></div>
+              </div>
+            </div>
+            <div class="panel tools">
+              <span class="label" style="padding-bottom:4px">What it can use</span>
+              <div class="tool"><div>Web search<small>Codex's built-in search</small></div><span class="sw on"></span></div>
+              <div class="tool"><div>Browser<small>Open and read pages</small></div><span class="sw on"></span></div>
+              <div class="tool"><div>Calendar<small>Read events</small></div><span class="sw"></span></div>
+              <div class="tool"><div>Email draft<small>Write drafts, never send</small></div><span class="sw on"></span></div>
+              <div class="tool"><div>Email send<small>Always asks you first</small></div><span class="gate">Needs approval</span></div>
+              <div class="tool"><div>Files outside task folder<small>Codex sandbox</small></div><span class="sw"></span></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 4. Pipeline builder -->
+        <section data-screen="a3" hidden>
+          <div class="main-head">
+            <h3>Weekly competitor watch</h3>
+            <span class="sub">Pipeline · 4 steps</span>
+            <div class="actions"><button class="btn">Save</button><button class="btn primary" data-go="a4">Run now</button></div>
+          </div>
+          <div class="builder">
+            <div class="chain">
+              <div class="node"><span class="n">1</span>
+                <div class="panel card">
+                  <div class="t"><b>scout</b><span class="chip">Web researcher</span><span class="chip arc">competitor-scan</span></div>
+                  <div class="io">in&nbsp; "vector databases for startups"<br>out <span>findings.md</span></div>
+                </div>
+              </div>
+              <div class="node"><span class="n">2</span>
+                <div class="panel card">
+                  <div class="t"><b>analyst</b><span class="chip">Market analyst</span><span class="chip arc">source-check</span></div>
+                  <div class="io">in&nbsp; <span>{{scout.findings.md}}</span> + last week's report<br>out <span>analysis.md</span></div>
+                </div>
+              </div>
+              <div class="node"><span class="n">3</span>
+                <div class="panel card">
+                  <div class="t"><b>writer</b><span class="chip">Doc writer</span><span class="chip arc">exec-brief</span><span class="chip arc">docx-house-style</span></div>
+                  <div class="io">in&nbsp; <span>{{analyst.analysis.md}}</span><br>out <span>brief.docx</span></div>
+                </div>
+              </div>
+              <div class="node gate-node"><span class="n">4</span>
+                <div class="panel card">
+                  <div class="t"><b>notify</b><span class="gate">Needs approval</span></div>
+                  <div class="io">email_draft to you, with <span>brief.docx</span> attached<br>Waits for you before sending</div>
+                </div>
+              </div>
+            </div>
+            <div class="panel side">
+              <div class="kv"><span class="label">Starts when</span><code>You say "run competitor watch"</code><code>Mondays 08:00</code></div>
+              <div class="kv"><span class="label">Limits</span><code>20 min per step · 4 steps max</code></div>
+              <div class="kv"><span class="label">Output folder</span><code>~/Jarvis/pipelines/competitor-watch/runs/</code></div>
+            </div>
+          </div>
+          <button class="btn ghost add">+ Add step</button>
+        </section>
+
+        <!-- 5. Run -->
+        <section data-screen="a4" hidden>
+          <div class="run">
+            <div class="main-head">
+              <h3>Weekly competitor watch</h3>
+              <span class="sub">Run 7 · started 08:00</span>
+              <div class="actions"><button class="btn ghost">Stop run</button></div>
+            </div>
+            <div class="progress" aria-label="Run progress">
+              <div class="seg done"><i></i><span>scout · done</span></div>
+              <div class="seg done"><i></i><span>analyst · done</span></div>
+              <div class="seg done"><i></i><span>writer · done</span></div>
+              <div class="seg live" id="seg4"><i></i><span id="seg4-txt">notify · waiting</span></div>
+            </div>
+            <div class="panel log">
+              <div class="logrow done"><span class="st">✓</span><div><b>scout</b><small>6 competitors, 22 sources · findings.md</small></div><time>08:00–08:09</time></div>
+              <div class="logrow done"><span class="st">✓</span><div><b>analyst</b><small>2 price changes since last week · analysis.md</small></div><time>08:09–08:15</time></div>
+              <div class="logrow done"><span class="st">✓</span><div><b>writer</b><small>One-page brief · brief.docx</small></div><time>08:15–08:18</time></div>
+              <div class="logrow wait" id="row4"><span class="st" id="row4-st">!</span><div><b>notify</b><small id="row4-txt">Draft ready. Waiting for your approval.</small></div><time id="row4-time">08:18</time></div>
+            </div>
+            <div class="panel approve" id="approve">
+              <h4>Approve before sending</h4>
+              <div class="mail">
+                <div class="hd">To <b>you</b> · Subject <b>Competitor watch, week 40</b> · 1 attachment</div>
+                <div>Two changes this week. Pinecone cut its Starter plan to $0 with a 2 GB cap, and Weaviate added a serverless tier. Full brief attached.</div>
+              </div>
+              <div class="row">
+                <button class="btn gold" id="approve-send">Send</button>
+                <button class="btn">Edit draft</button>
+                <button class="btn ghost" id="approve-skip">Skip this step</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <aside class="voice" aria-label="Voice transcript">
+        <div class="voice-head">Voice<span id="voice-state">listening</span></div>
+        <div class="orb" aria-hidden="true"></div>
+        <div class="transcript" id="transcript"></div>
+      </aside>
+    </div>
+  </div>
+
+  <div class="map" data-show="simple" aria-label="How it works">
+    <div><span class="who">you</span><b>Say it</b><small>Describe what you want, or pick a ready-made routine.</small></div>
+    <div><span class="who">jarvis</span><b>Plan it</b><small>Jarvis writes the steps in plain words. You check them.</small></div>
+    <div><span class="who">you</span><b>Try it once</b><small>See a real result before anything runs on its own.</small></div>
+    <div><span class="who">you</span><b>OK the risky part</b><small>Sending, posting or booking always waits for your yes.</small></div>
+    <div><span class="who">jarvis</span><b>Keep it running</b><small>Runs on schedule, learns what worked, pauses and explains if it fails.</small></div>
+  </div>
+  <div class="map" data-show="advanced" aria-label="Who does what">
+    <div><span class="who">you + Gemini</span><b>Ask</b><small>"Save how you did that as a skill." Gemini writes a short spec.</small></div>
+    <div><span class="who">Codex</span><b>Draft</b><small>A skill-author task writes SKILL.md and templates. You review before saving.</small></div>
+    <div><span class="who">you</span><b>Assemble</b><small>Attach skills to agents, set tools and limits, chain agents into steps.</small></div>
+    <div><span class="who">Rust runner</span><b>Run</b><small>Each step is one Codex task. Progress streams to the Tasks pane.</small></div>
+    <div><span class="who">you</span><b>Approve</b><small>Anything that sends or posts waits here. Jarvis tells you when it's ready.</small></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var LEDE = {
+    simple: "The everyday version. Describe what you want or pick a template, check a plain-English plan, try it once, then turn it on. No skills, agents or settings to learn. Everything shown is example data.",
+    advanced: "The power-user version of the same feature. Save a skill, give it to an agent, chain agents into a pipeline, and run it with an approval step before anything is sent. Everything shown is example data."
+  };
+
+  var FLOWS = {
+    simple: [
+      { id: "setup", label: "Set up once", nav: "", busy: false, helper: "not set up",
+        title: "First run: three steps, no Terminal",
+        text: "Today a user has to install Codex and run codex login in Terminal. Here, each step is a button. Try Install and Connect.",
+        voice: [["ai", "Hi, I'm Jarvis. Two quick things and I can start researching for you."]] },
+      { id: "pick", label: "Say what you want", nav: "routines", busy: false,
+        title: "Describe it, or start from a template",
+        text: "The user never sees the words skill, agent or pipeline. Templates ask one or two questions at most. Tap the mic or any card.",
+        voice: [["me", "Every Monday morning, check my competitors and email me a short summary."]] },
+      { id: "recipe", label: "Check the plan", nav: "routines", busy: false,
+        title: "Jarvis turns the request into a plain recipe",
+        text: "Behind the scenes this is a pipeline of agents with skills. Up front it is four sentences. Each step shows what it's allowed to do, and the risky one says it will ask first.",
+        voice: [
+          ["tool", "<b>create_routine</b> from your request · 4 steps"],
+          ["ai", "Here's the plan. Which companies should I watch?"],
+          ["me", "Pinecone, Weaviate, Qdrant. Oh, and Milvus too."],
+          ["ai", "Added Milvus. Want to try it once now?"]
+        ] },
+      { id: "try", label: "Try it once", nav: "routines", busy: true,
+        title: "The result comes first, the approval second",
+        text: "One friendly progress line instead of a step log. The finished summary shows up front, and the email waits for a yes. The step log is under Details for anyone curious.",
+        voice: [["ai", "Your competitor summary is ready. Pinecone went free on its Starter plan. Should I email it to you?"]] },
+      { id: "routines", label: "Keep it running", nav: "routines", busy: false,
+        title: "Routines run on their own and explain problems plainly",
+        text: "After a good run, Jarvis offers once to remember how it did it (that saves a skill). A routine that fails twice pauses itself and shows one button that fixes the problem.",
+        voice: [
+          ["me", "Turn it on."],
+          ["ai", "Weekly competitor watch is on. Next run Monday at 8. Meeting prep is paused because I lost access to your calendar."]
+        ] }
+    ],
+    advanced: [
+      { id: "draft", label: "Jarvis drafts a skill", nav: "skills", busy: true,
+        title: "Jarvis drafts a skill from a finished task",
+        text: "You ask by voice. Gemini hands a short spec to a Codex skill-author task, which writes SKILL.md plus a template. The draft opens for review. Nothing is saved until you press Save.",
+        voice: [
+          ["me", "Jarvis, save how you did the vector database comparison as a skill. Call it competitor scan."],
+          ["tool", "<b>create_skill</b> from task 0042 → skill-author task started"],
+          ["ai", "Drafting a competitor-scan skill from that report. It's open for you to review."]
+        ] },
+      { id: "library", label: "Skill library", nav: "skills", busy: false,
+        title: "Skills live in one library",
+        text: "Each skill is a folder under ~/Jarvis/skills. The card shows who wrote it and which agents use it. The skill you just saved is highlighted.",
+        voice: [
+          ["ai", "Saved competitor-scan. No agent uses it yet. Want me to add it to Market analyst?"],
+          ["me", "Yes, add it."],
+          ["tool", "<b>update_agent</b> market-analyst · skills += competitor-scan"]
+        ] },
+      { id: "agent", label: "Build an agent", nav: "agents", busy: false,
+        title: "An agent is a role, a model, skills and tools",
+        text: "Agents are saved worker profiles. Tools that send or post can't be switched on. They always stop and ask you first.",
+        voice: [
+          ["ai", "Market analyst now has competitor-scan and source-check. It can search and draft email but can't send."],
+          ["me", "Good. Put it in a weekly pipeline that emails me a brief."]
+        ] },
+      { id: "pipeline", label: "Chain a pipeline", nav: "pipelines", busy: false,
+        title: "Chain agents into a pipeline",
+        text: "Each step runs one agent and passes its output file to the next step. Start a pipeline by voice or on a schedule. The final step is an approval gate because it emails.",
+        voice: [
+          ["tool", "<b>create_pipeline</b> competitor-watch · 4 steps · Mondays 08:00"],
+          ["ai", "Set up Weekly competitor watch. It runs Mondays at 8, and I'll ask before sending the email. Run it now?"],
+          ["me", "Run it now."]
+        ] },
+      { id: "run", label: "Run and approve", nav: "pipelines", busy: true,
+        title: "Run it and approve the last step",
+        text: "Steps report live progress, the same way research tasks do today. When the run reaches the gate, Jarvis tells you at the next pause and waits. Try Send or Skip.",
+        voice: [
+          ["tool", "<b>run_pipeline</b> competitor-watch · run 7"],
+          ["ai", "Your competitor brief is ready. Two price changes this week. The email is waiting for your OK."]
+        ] }
+    ]
+  };
+
+  var mode = "simple", cur = 0;
+  var stepsEl = document.getElementById("steps");
+  var screens = document.querySelectorAll("[data-screen]");
+  var navItems = document.querySelectorAll("[data-nav]");
+  var showEls = document.querySelectorAll("[data-show]");
+  var modeBtns = document.querySelectorAll("[data-mode]");
+  var transcript = document.getElementById("transcript");
+  var extra = {}; // messages added by clicks, per screen, so they survive navigation
+
+  function esc(s) { return s.replace(/[&<>]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]; }); }
+  function key() { return (mode === "simple" ? "s" : "a") + cur; }
+  function flow() { return FLOWS[mode]; }
+
+  function setConn(busy, override) {
+    var name = mode === "simple" ? "Research helper" : "Codex";
+    var txt = override ? name + " " + override : name + (busy ? " working" : " ready");
+    document.getElementById("conn-codex").innerHTML = '<i class="dot' + (busy || override ? " busy" : "") + '"></i>' + txt;
+  }
+
+  function msgHtml(m) {
+    var who = m[0] === "me" ? "you" : m[0] === "ai" ? "jarvis" : "tool call";
+    var body = m[0] === "tool" ? m[1] : esc(m[1]);
+    return '<div class="msg ' + m[0] + '"><span class="who">' + who + '</span><p>' + body + '</p></div>';
+  }
+  function say(k, m) { (extra[k] = extra[k] || []).push(m); if (k === key()) transcript.insertAdjacentHTML("beforeend", msgHtml(m)); }
+
+  function buildSteps() {
+    stepsEl.innerHTML = flow().map(function (s, i) {
+      return '<li><button data-step="' + i + '"><b>' + (i + 1) + '</b>' + esc(s.label) + '</button></li>';
+    }).join("");
+  }
+
+  function render() {
+    var s = flow()[cur], k = key();
+    screens.forEach(function (el) { el.hidden = el.dataset.screen !== k; });
+    showEls.forEach(function (el) { el.hidden = el.dataset.show !== mode; });
+    modeBtns.forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.mode === mode)); });
+    stepsEl.querySelectorAll("button").forEach(function (b, i) {
+      if (i === cur) b.setAttribute("aria-current", "step"); else b.removeAttribute("aria-current");
+      b.classList.toggle("done", i < cur);
+    });
+    navItems.forEach(function (n) { n.classList.toggle("on", n.dataset.nav === s.nav); });
+    document.getElementById("lede").textContent = LEDE[mode];
+    document.getElementById("cap-title").textContent = s.title;
+    document.getElementById("cap-text").textContent = s.text;
+    document.getElementById("prev").disabled = cur === 0;
+    document.getElementById("next").disabled = cur === flow().length - 1;
+    document.getElementById("voice-state").textContent = s.busy ? "speaking" : "listening";
+    setConn(s.busy, s.helper && !setupDone() ? s.helper : null);
+    transcript.innerHTML = s.voice.concat(extra[k] || []).map(msgHtml).join("");
+    try { history.replaceState(null, "", "#" + s.id); } catch (e) {}
+  }
+
+  function go(i) { cur = Math.max(0, Math.min(flow().length - 1, i)); render(); }
+  function goKey(k) { var m = k[0] === "s" ? "simple" : "advanced"; if (m !== mode) { mode = m; buildSteps(); } go(Number(k.slice(1))); }
+  function setMode(m) { if (m === mode) return; mode = m; cur = 0; buildSteps(); render(); }
+
+  document.addEventListener("click", function (e) {
+    var t;
+    if ((t = e.target.closest("[data-step]"))) return go(Number(t.dataset.step));
+    if ((t = e.target.closest("[data-go]"))) return goKey(t.dataset.go);
+    if ((t = e.target.closest("[data-open-adv]"))) return goKey(t.dataset.openAdv);
+    if ((t = e.target.closest("[data-mode]"))) return setMode(t.dataset.mode);
+    if ((t = e.target.closest("[data-set]"))) return doSetup(t);
+  });
+  document.getElementById("prev").addEventListener("click", function () { go(cur - 1); });
+  document.getElementById("next").addEventListener("click", function () { go(cur + 1); });
+
+  /* simple: setup */
+  var setup = { 2: false, 3: false };
+  function setupDone() { return setup[2] && setup[3]; }
+  function doSetup(btn) {
+    var n = btn.dataset.set, row = document.getElementById("set-" + n);
+    btn.disabled = true;
+    btn.textContent = n === "2" ? "Installing…" : "Waiting for sign-in…";
+    setTimeout(function () {
+      setup[n] = true;
+      row.classList.add("ok");
+      row.querySelector(".n").textContent = "✓";
+      btn.outerHTML = '<span class="state">Done</span>';
+      if (setupDone()) {
+        document.getElementById("ready").hidden = false;
+        setConn(false, null);
+        say("s0", ["ai", "All set. What would you like me to do first?"]);
+      }
+    }, 900);
+  }
+
+  /* simple: approval on the first try */
+  function sResolve(sent) {
+    document.getElementById("try-bar").style.width = "100%";
+    document.getElementById("try-line").textContent = sent ? "Done. Summary sent to your inbox." : "Done. Nothing was sent.";
+    document.getElementById("ask-card").innerHTML =
+      '<p class="done">' + (sent ? "Sent to you." : "Okay, not sent. The summary is in Documents.") + '</p>' +
+      '<div class="row"><button class="btn primary" data-go="s4">Turn on this routine</button><button class="btn ghost">Not yet</button></div>';
+    setConn(false, null);
+    document.getElementById("voice-state").textContent = "listening";
+    say("s3", ["ai", sent ? "Sent. Want me to run this every Monday?" : "Didn't send it. Want me to run this every Monday anyway?"]);
+  }
+  document.getElementById("s-send").addEventListener("click", function () { sResolve(true); });
+  document.getElementById("s-skip").addEventListener("click", function () { sResolve(false); });
+
+  /* simple: remember prompt */
+  document.getElementById("rem-yes").addEventListener("click", function () {
+    document.getElementById("remember").innerHTML = '<p class="resolved">Remembered as "Compare competitors". Similar requests will use it.</p>';
+    document.getElementById("knows").insertAdjacentHTML("afterbegin", '<span class="chip arc">Compare competitors · new</span>');
+    say("s4", ["tool", "<b>save_as_skill</b> from this run → compare-competitors"]);
+  });
+  document.getElementById("rem-no").addEventListener("click", function () { document.getElementById("remember").hidden = true; });
+
+  /* advanced: approval gate */
+  function resolve(sent) {
+    document.getElementById("seg4").className = "seg done";
+    document.getElementById("seg4-txt").textContent = sent ? "notify · sent" : "notify · skipped";
+    document.getElementById("row4").className = "logrow done";
+    document.getElementById("row4-st").textContent = "✓";
+    document.getElementById("row4-txt").textContent = sent ? "Sent to you with brief.docx" : "Skipped. Brief kept in the run folder.";
+    document.getElementById("row4-time").textContent = "08:18–08:21";
+    document.getElementById("approve").innerHTML = '<span class="resolved">' + (sent ? "Sent. Run 7 finished." : "Skipped. Run 7 finished without sending.") + '</span>';
+    document.getElementById("voice-state").textContent = "listening";
+    setConn(false, null);
+    say("a4", ["ai", sent ? "Sent. It's in your inbox." : "Okay, I didn't send it. The brief is in the run folder."]);
+  }
+  document.getElementById("approve-send").addEventListener("click", function () { resolve(true); });
+  document.getElementById("approve-skip").addEventListener("click", function () { resolve(false); });
+
+  /* deep link: #pick, #pipeline, … */
+  var h = location.hash.slice(1), found = null;
+  ["simple", "advanced"].forEach(function (m) { FLOWS[m].forEach(function (s, i) { if (s.id === h) found = [m, i]; }); });
+  if (found) mode = found[0];
+  buildSteps();
+  go(found ? found[1] : 0);
+})();
+</script>
