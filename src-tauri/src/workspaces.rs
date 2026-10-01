@@ -1,4 +1,4 @@
-//! Project workspaces: "Fikra", "GSoft", "Personal". Each has its own folder under
+//! Projects (called workspaces in code): "Fikra", "GSoft", "Personal". Each has its own folder under
 //! <research root>/projects/<slug>/ holding workspace.json (what it is, where its code lives, how to
 //! check it) and room for notes. Memories are tagged by workspace, and code fixes default to the
 //! workspace's project folder. The active workspace is kept in settings.
@@ -20,6 +20,8 @@ pub struct Workspace {
     pub folder: String,
     /// Commands that check the project (tests, type check, build), run after code changes.
     pub verify: Vec<String>,
+    /// Standing instructions: how Jarvis should work in every chat in this project.
+    pub instructions: String,
     /// A web address to open and look at after a change, for web projects.
     pub url: String,
     pub created: u64,
@@ -57,6 +59,111 @@ pub fn active(app: &AppHandle) -> Option<Workspace> {
     load(app, &settings::load(app).active_workspace)
 }
 
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFile {
+    pub name: String,
+    pub size: u64,
+    /// Seconds since 1970.
+    pub modified: u64,
+}
+
+const MAX_FILE: u64 = 50 * 1024 * 1024;
+
+/// The project's files folder, for a project that exists and has one.
+fn files_dir(app: &AppHandle, slug: &str) -> Result<PathBuf, String> {
+    let ws = load(app, slug).ok_or("There's no project by that name.")?;
+    if ws.folder.is_empty() {
+        return Err("This project has no folder.".into());
+    }
+    let dir = PathBuf::from(&ws.folder);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Only plain file names: no folders, no dots-first, no path tricks.
+fn safe_name(name: &str) -> Option<&str> {
+    let ok = !name.is_empty() && name.len() <= 200 && !name.starts_with('.') && !name.contains('/') && !name.contains('\\') && !name.contains("..");
+    ok.then_some(name)
+}
+
+pub(crate) fn list_files(app: &AppHandle, slug: &str) -> Vec<ProjectFile> {
+    let Ok(dir) = files_dir(app, slug) else { return vec![] };
+    let mut out: Vec<ProjectFile> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let meta = e.metadata().ok()?;
+            if !meta.is_file() || name.starts_with('.') {
+                return None;
+            }
+            let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+            Some(ProjectFile { name, size: meta.len(), modified })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
+}
+
+#[tauri::command]
+pub fn project_files(app: AppHandle, slug: String) -> Vec<ProjectFile> {
+    list_files(&app, &slug)
+}
+
+/// Copy files into the project. A name that's taken gets a number before its extension.
+#[tauri::command]
+pub fn project_add_files(app: AppHandle, slug: String, paths: Vec<String>) -> Result<Vec<ProjectFile>, String> {
+    let dir = files_dir(&app, &slug)?;
+    for p in paths {
+        let from = PathBuf::from(&p);
+        let meta = std::fs::metadata(&from).map_err(|_| format!("Can't read {p}."))?;
+        if !meta.is_file() {
+            return Err(format!("{p} isn't a file."));
+        }
+        if meta.len() > MAX_FILE {
+            return Err(format!("{} is over 50 MB.", from.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(p)));
+        }
+        let name = from.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let name = safe_name(&name).ok_or("That file name can't be used.")?.to_string();
+        let (stem, ext) = match name.rsplit_once('.') {
+            Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+            _ => (name.clone(), String::new()),
+        };
+        let mut to = dir.join(&name);
+        let mut n = 2;
+        while to.exists() {
+            to = dir.join(format!("{stem} {n}{ext}"));
+            n += 1;
+        }
+        std::fs::copy(&from, &to).map_err(|e| e.to_string())?;
+    }
+    Ok(list_files(&app, &slug))
+}
+
+#[tauri::command]
+pub fn project_remove_file(app: AppHandle, slug: String, name: String) -> Result<Vec<ProjectFile>, String> {
+    let dir = files_dir(&app, &slug)?;
+    let name = safe_name(&name).ok_or("That file name can't be used.")?;
+    match std::fs::remove_file(dir.join(name)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    Ok(list_files(&app, &slug))
+}
+
+/// A project file's text, for Jarvis to read. Binary files and huge ones are refused.
+#[tauri::command]
+pub fn project_read_file(app: AppHandle, slug: String, name: String) -> Result<String, String> {
+    let dir = files_dir(&app, &slug)?;
+    let name = safe_name(&name).ok_or("That file name can't be used.")?;
+    let bytes = std::fs::read(dir.join(name)).map_err(|_| format!("There's no file called {name} in this project."))?;
+    let text = String::from_utf8(bytes).map_err(|_| format!("{name} isn't a text file, so it can't be read here."))?;
+    Ok(text.chars().take(30_000).collect())
+}
+
 #[tauri::command]
 pub fn list_workspaces(app: AppHandle) -> Vec<Workspace> {
     let mut out: Vec<Workspace> = std::fs::read_dir(root(&app))
@@ -78,7 +185,7 @@ pub fn get_active_workspace(app: AppHandle) -> Option<Workspace> {
 pub fn save_workspace(app: AppHandle, mut workspace: Workspace) -> Result<Workspace, String> {
     workspace.name = workspace.name.trim().to_string();
     if workspace.name.is_empty() {
-        return Err("Give the workspace a name.".into());
+        return Err("Give the project a name.".into());
     }
     if workspace.slug.is_empty() {
         workspace.slug = slug(&workspace.name);
@@ -101,13 +208,38 @@ pub fn save_workspace(app: AppHandle, mut workspace: Workspace) -> Result<Worksp
     Ok(workspace)
 }
 
-/// Remove a workspace's settings. Its folder on disk, and the memories tagged with it, stay.
+/// A new project made from just a name: its folder is created under the research folder
+/// (projects/<slug>/files), so nobody has to pick one. A taken name gets a number after it.
+#[tauri::command]
+pub fn create_project(app: AppHandle, name: String) -> Result<Workspace, String> {
+    let name = name.trim().to_string();
+    let base = slug(&name);
+    if base.is_empty() {
+        return Err("Give the project a name using letters or numbers.".into());
+    }
+    let mut slug = base.clone();
+    let mut n = 2;
+    while root(&app).join(&slug).exists() {
+        slug = format!("{base}-{n}");
+        n += 1;
+    }
+    let folder = root(&app).join(&slug).join("files");
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    save_workspace(
+        app,
+        Workspace { slug, name, folder: folder.display().to_string(), ..Default::default() },
+    )
+}
+
+/// Remove a workspace's settings. Its folder on disk, the memories tagged with it and its chats
+/// stay; the chats move out of the project.
 #[tauri::command]
 pub fn delete_workspace(app: AppHandle, slug: String) -> Result<(), String> {
     if load(&app, &slug).is_none() {
         return Ok(());
     }
     let _ = std::fs::remove_file(file(&app, &slug));
+    crate::chats::unfile(&app, &slug);
     if settings::load(&app).active_workspace == slug {
         set_active(&app, "")?;
     }
@@ -124,7 +256,7 @@ fn set_active(app: &AppHandle, slug: &str) -> Result<(), String> {
 #[tauri::command]
 pub fn set_active_workspace(app: AppHandle, slug: String) -> Result<Option<Workspace>, String> {
     if !slug.is_empty() && load(&app, &slug).is_none() {
-        return Err("There's no workspace by that name.".into());
+        return Err("There's no project by that name.".into());
     }
     set_active(&app, &slug)?;
     Ok(active(&app))
@@ -132,7 +264,7 @@ pub fn set_active_workspace(app: AppHandle, slug: String) -> Result<Option<Works
 
 #[cfg(test)]
 mod tests {
-    use super::slug;
+    use super::{safe_name, slug};
 
     #[test]
     fn names_become_folder_names() {
@@ -140,5 +272,14 @@ mod tests {
         assert_eq!(slug("  G-Soft!! "), "g-soft");
         assert_eq!(slug("../etc"), "etc");
         assert_eq!(slug("!!!"), "");
+    }
+
+    #[test]
+    fn file_names_cannot_escape_the_folder() {
+        assert_eq!(safe_name("notes.md"), Some("notes.md"));
+        assert_eq!(safe_name("../secrets"), None);
+        assert_eq!(safe_name("a/b.txt"), None);
+        assert_eq!(safe_name(".env"), None);
+        assert_eq!(safe_name(""), None);
     }
 }

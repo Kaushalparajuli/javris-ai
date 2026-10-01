@@ -2,6 +2,7 @@
 //!
 //! Each chat is one JSON file under <research root>/chats, so a conversation
 //! survives quitting the app and the user can keep several going at once.
+//! A chat can belong to a project (a workspace): opening it switches Jarvis to that project.
 
 use crate::settings;
 use serde::{Deserialize, Serialize};
@@ -26,11 +27,20 @@ pub struct Chat {
     pub created_at: u64,
     pub updated_at: u64,
     pub messages: Vec<ChatMsg>,
+    /// Slug of the project this chat belongs to, or empty for none.
+    pub workspace: String,
+    /// Kept at the top of its list.
+    pub pinned: bool,
+    /// The title was written from the conversation (or by the user), so saving the transcript
+    /// must not replace it with the first message again.
+    pub title_set: bool,
+    /// The user renamed the chat: Jarvis never retitles it.
+    pub title_locked: bool,
 }
 
 impl Default for Chat {
     fn default() -> Self {
-        Self { id: String::new(), title: String::new(), created_at: 0, updated_at: 0, messages: vec![] }
+        Self { id: String::new(), title: String::new(), created_at: 0, updated_at: 0, messages: vec![], workspace: String::new(), pinned: false, title_set: false, title_locked: false }
     }
 }
 
@@ -43,6 +53,9 @@ pub struct ChatSummary {
     created_at: u64,
     updated_at: u64,
     count: usize,
+    workspace: String,
+    pinned: bool,
+    title_locked: bool,
 }
 
 fn now_ms() -> u64 {
@@ -93,9 +106,12 @@ pub fn list_chats(app: AppHandle) -> Vec<ChatSummary> {
             created_at: c.created_at,
             updated_at: c.updated_at,
             count: c.messages.len(),
+            workspace: c.workspace,
+            pinned: c.pinned,
+            title_locked: c.title_locked,
         })
         .collect();
-    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    out.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.updated_at.cmp(&a.updated_at)));
     out
 }
 
@@ -104,9 +120,20 @@ pub fn load_chat(app: AppHandle, id: String) -> Option<Chat> {
     read_chat(&chat_file(&app, &id)?)
 }
 
-/// Start a new, empty conversation and return it.
+/// An existing project's slug, or empty. Chats never point at a project that isn't there.
+fn check_workspace(app: &AppHandle, workspace: Option<String>) -> Result<String, String> {
+    let ws = workspace.unwrap_or_default();
+    if ws.is_empty() || crate::workspaces::load(app, &ws).is_some() {
+        Ok(ws)
+    } else {
+        Err("There's no project by that name.".into())
+    }
+}
+
+/// Start a new, empty conversation, in a project if `workspace` names one, and return it.
 #[tauri::command]
-pub fn new_chat(app: AppHandle) -> Result<Chat, String> {
+pub fn new_chat(app: AppHandle, workspace: Option<String>) -> Result<Chat, String> {
+    let workspace = check_workspace(&app, workspace)?;
     let now = now_ms();
     let dir = chats_dir(&app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -117,7 +144,7 @@ pub fn new_chat(app: AppHandle) -> Result<Chat, String> {
         id = format!("c{now}-{n}");
         n += 1;
     }
-    let chat = Chat { id, title: String::new(), created_at: now, updated_at: now, messages: vec![] };
+    let chat = Chat { id, title: String::new(), created_at: now, updated_at: now, messages: vec![], workspace, pinned: false, title_set: false, title_locked: false };
     write(&app, &chat)?;
     Ok(chat)
 }
@@ -131,25 +158,79 @@ fn write(app: &AppHandle, chat: &Chat) -> Result<(), String> {
     std::fs::write(&path, json).map_err(|e| e.to_string())
 }
 
-/// Store the transcript. `created_at` is kept from the existing file so the
-/// conversation's age doesn't reset on every save.
+/// Store the transcript. `created_at` and the project are kept from the existing file so the
+/// conversation's age doesn't reset on every save and it stays where it was filed.
 #[tauri::command]
 pub fn save_chat(app: AppHandle, id: String, title: String, messages: Vec<ChatMsg>) -> Result<Chat, String> {
     let path = chat_file(&app, &id).ok_or("Bad chat id")?;
     let now = now_ms();
-    let created_at = read_chat(&path).map(|c| c.created_at).unwrap_or(now);
-    let chat = Chat { id, title, created_at, updated_at: now, messages };
+    let old = read_chat(&path);
+    let created_at = old.as_ref().map(|c| c.created_at).unwrap_or(now);
+    let old = old.unwrap_or_default();
+    // Once the chat has a real title, saving the transcript leaves it alone.
+    let title = if old.title_set { old.title.clone() } else { title };
+    let chat = Chat { id, title, created_at, updated_at: now, messages, workspace: old.workspace, pinned: old.pinned, title_set: old.title_set, title_locked: old.title_locked };
     write(&app, &chat)?;
     Ok(chat)
 }
 
+/// The user renamed the chat: the title sticks, and Jarvis stops retitling it.
 #[tauri::command]
 pub fn rename_chat(app: AppHandle, id: String, title: String) -> Result<(), String> {
     let path = chat_file(&app, &id).ok_or("Bad chat id")?;
     let mut chat = read_chat(&path).ok_or("No such chat")?;
-    chat.title = title;
-    chat.updated_at = now_ms();
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        // An empty name hands the title back to Jarvis.
+        chat.title_locked = false;
+        chat.title_set = false;
+    } else {
+        chat.title = title;
+        chat.title_locked = true;
+        chat.title_set = true;
+    }
     write(&app, &chat)
+}
+
+/// Jarvis named the chat from what it's about. Ignored if the user has renamed it.
+/// Doesn't touch `updated_at`, so a new title doesn't reorder the list.
+#[tauri::command]
+pub fn set_chat_title(app: AppHandle, id: String, title: String) -> Result<(), String> {
+    let path = chat_file(&app, &id).ok_or("Bad chat id")?;
+    let mut chat = read_chat(&path).ok_or("No such chat")?;
+    let title = title.trim().to_string();
+    if chat.title_locked || title.is_empty() {
+        return Ok(());
+    }
+    chat.title = title;
+    chat.title_set = true;
+    write(&app, &chat)
+}
+
+/// File a chat under a project, or under none with an empty `workspace`.
+#[tauri::command]
+pub fn move_chat(app: AppHandle, id: String, workspace: String) -> Result<(), String> {
+    let workspace = check_workspace(&app, Some(workspace))?;
+    let path = chat_file(&app, &id).ok_or("Bad chat id")?;
+    let mut chat = read_chat(&path).ok_or("No such chat")?;
+    chat.workspace = workspace;
+    write(&app, &chat)
+}
+
+#[tauri::command]
+pub fn pin_chat(app: AppHandle, id: String, pinned: bool) -> Result<(), String> {
+    let path = chat_file(&app, &id).ok_or("Bad chat id")?;
+    let mut chat = read_chat(&path).ok_or("No such chat")?;
+    chat.pinned = pinned;
+    write(&app, &chat)
+}
+
+/// A project was deleted: its chats stay, outside any project.
+pub(crate) fn unfile(app: &AppHandle, workspace: &str) {
+    for mut chat in all_chats(app).into_iter().filter(|c| c.workspace == workspace) {
+        chat.workspace.clear();
+        let _ = write(app, &chat);
+    }
 }
 
 #[tauri::command]

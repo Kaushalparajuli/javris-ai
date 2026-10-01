@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import DocumentEditor from "./components/DocumentEditor";
+import ChatRow from "./components/ChatRow";
 import ImageThumb from "./components/ImageThumb";
 import LibraryPage from "./components/LibraryPage";
 import Orb from "./components/Orb";
@@ -11,25 +12,32 @@ import SearchPage from "./components/SearchPage";
 import BriefingsPage from "./components/BriefingsPage";
 import KnowHowPage from "./components/KnowHowPage";
 import MemoryPage from "./components/MemoryPage";
+import NewProjectPage from "./components/NewProjectPage";
+import AppsPage from "./components/AppsPage";
+import DayPage from "./components/DayPage";
+import ProjectsPage from "./components/ProjectsPage";
+import ProjectPage from "./components/ProjectPage";
 import RoutinesPage from "./components/RoutinesPage";
 import SetupPanel from "./components/SetupPanel";
 import ApprovalCard from "./components/ApprovalCard";
 import CalendarPage from "./components/CalendarPage";
 import MailPage from "./components/MailPage";
 import DrivePage from "./components/DrivePage";
-import YouTubePage, { type YtIntent } from "./components/YouTubePage";
+import YouTubePage, { type YtIntent, type YtItem } from "./components/YouTubePage";
+import YtDock from "./components/YtDock";
 import CommandPalette from "./components/CommandPalette";
 import MeetingBanner from "./components/MeetingBanner";
 import { listen } from "@tauri-apps/api/event";
 import SettingsPanel from "./components/SettingsPanel";
 import TaskCard from "./components/TaskCard";
-import { day } from "./lib/format";
 import { isImportable } from "./lib/importDoc";
 import { useJarvis } from "./lib/jarvis";
 import { useMiniBridge } from "./lib/mini";
-import type { CodexStatus, Task, Workspace } from "./lib/types";
+import type { ChatSummary, CodexStatus, Task, Workspace } from "./lib/types";
 
 const SIDE_KEY = "jarvis.sidebar.collapsed";
+/** Projects folded open in the sidebar. */
+const OPEN_KEY = "jarvis.projects.open";
 /** Below this width the sidebar stops being a column and opens as a drawer instead. */
 const NARROW = "(max-width: 1100px)";
 
@@ -66,9 +74,27 @@ export default function App() {
     };
   }, []);
   // What fills the main area beside the sidebar.
-  const [page, setPage] = useState<"chat" | "library" | "search" | "briefings" | "routines" | "knowhow" | "mail" | "calendar" | "drive" | "youtube" | "memory">("chat");
+  const [page, setPage] = useState<"chat" | "library" | "search" | "briefings" | "routines" | "knowhow" | "mail" | "calendar" | "drive" | "youtube" | "memory" | "projects" | "project" | "newproject" | "day" | "apps">("chat");
   // Jarvis asking the YouTube page to show results or play a video.
   const [ytIntent, setYtIntent] = useState<YtIntent | null>(null);
+  // The video playing now stays at the app level so it keeps going on other pages (mini bar at the bottom).
+  const [ytPlaying, setYtPlaying] = useState<YtItem | null>(null);
+  const [ytSlot, setYtSlot] = useState<HTMLElement | null>(null);
+  const [ytAudioOnly, setYtAudioOnly] = useState(() => {
+    try {
+      return localStorage.getItem("jarvis.yt.audioOnly") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const audioOnly = (on: boolean) => {
+    setYtAudioOnly(on);
+    try {
+      localStorage.setItem("jarvis.yt.audioOnly", on ? "1" : "0");
+    } catch {
+      /* not remembered this time */
+    }
+  };
   useEffect(() => {
     const on = (e: Event) => {
       setYtIntent({ ...(e as CustomEvent<Omit<YtIntent, "seq">>).detail, seq: Date.now() });
@@ -78,14 +104,95 @@ export default function App() {
     return () => window.removeEventListener("jarvis-youtube", on);
   }, []);
   const showLibrary = page === "library";
-  const [ws, setWs] = useState<Workspace | null>(null);
+  const ws = j.workspace;
+  // Projects, like Claude Code: each holds its own chats, and a chat works in its project.
+  const [projects, setProjects] = useState<Workspace[] | null>(null);
   useEffect(() => {
-    const load = () => invoke<Workspace | null>("get_active_workspace").then(setWs).catch(() => {});
+    const load = () => invoke<Workspace[]>("list_workspaces").then(setProjects).catch(() => {});
     load();
     window.addEventListener("jarvis-workspace", load);
     return () => window.removeEventListener("jarvis-workspace", load);
   }, []);
+  // The open chat's project was deleted: reopen the chat, now outside any project.
+  useEffect(() => {
+    if (projects && ws && !projects.some((p) => p.slug === ws.slug)) j.openChat(j.chatId);
+  }, [projects]);
+  const [openProjects, setOpenProjects] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(OPEN_KEY) ?? "[]");
+    } catch {
+      return [];
+    }
+  });
+  const setOpen = (slug: string, open: boolean) =>
+    setOpenProjects((list) => {
+      const next = open ? [...new Set([...list, slug])] : list.filter((s) => s !== slug);
+      try {
+        localStorage.setItem(OPEN_KEY, JSON.stringify(next));
+      } catch {
+        /* not remembered this time */
+      }
+      return next;
+    });
+  // The project of the chat you're in is always unfolded.
+  useEffect(() => {
+    if (ws && !openProjects.includes(ws.slug)) setOpen(ws.slug, true);
+  }, [ws?.slug]);
+  const [editProject, setEditProject] = useState<string | null>(null);
+
+  // A project was saved (or deleted) on the create/edit page. A project that still exists goes back
+  // to its own page if it was being edited; anything else goes to the project list.
+  const [viewProject, setViewProject] = useState<string | null>(null);
+  const projectSaved = async () => {
+    const list = await invoke<Workspace[]>("list_workspaces").catch(() => []);
+    setProjects(list);
+    window.dispatchEvent(new Event("jarvis-workspace"));
+    const back = editProject && list.some((p) => p.slug === editProject) ? editProject : null;
+    setEditProject(null);
+    setViewProject(back);
+    setPage(back ? "project" : "projects");
+  };
+  const showProject = (slug: string) => {
+    closePanel();
+    setViewProject(slug);
+    setPage("project");
+  };
+  /** A chat dragged from the sidebar onto a project (or onto "Chats" to leave its project). */
+  const dropChat = (e: React.DragEvent, slug: string) => {
+    const id = e.dataTransfer.getData("application/x-jarvis-chat");
+    if (!id) return;
+    e.preventDefault();
+    if (slug) setOpen(slug, true);
+    j.moveChat(id, slug).catch((err) => j.setError(String(err)));
+  };
+  const allowDrop = (e: React.DragEvent) => e.dataTransfer.types.includes("application/x-jarvis-chat") && e.preventDefault();
+  const newChatIn = (slug: string) => {
+    setPage("chat");
+    closePanel();
+    if (slug) setOpen(slug, true);
+    j.newChat(slug);
+  };
+  const looseChats = j.chats.filter((c) => !c.workspace || (projects && !projects.some((p) => p.slug === c.workspace)));
   const isMac = navigator.userAgent.includes("Mac");
+  // For ducking: is Jarvis talking right now? (Read by the player on a timer, so it can't be state.)
+  const speaking = useCallback(() => j.orb.mode() === "speak", [j.orb]);
+  const chatRow = (c: ChatSummary) => (
+    <ChatRow
+      key={c.id}
+      chat={c}
+      active={j.chatId === c.id && page === "chat" && !docTask}
+      projects={projects ?? []}
+      onOpen={() => {
+        setPage("chat");
+        closePanel();
+        j.openChat(c.id);
+      }}
+      onRename={(t) => j.renameChat(c.id, t).catch((e) => j.setError(String(e)))}
+      onPin={(p) => j.pinChat(c.id, p).catch((e) => j.setError(String(e)))}
+      onMove={(slug) => j.moveChat(c.id, slug).catch((e) => j.setError(String(e)))}
+      onDelete={() => j.deleteChat(c.id)}
+    />
+  );
 
   // ⌘K (Ctrl+K on Windows) jumps to search from anywhere.
   useEffect(() => {
@@ -292,7 +399,7 @@ export default function App() {
   };
 
   return (
-    <div className="app">
+    <div className={`app${ytPlaying && !ytSlot ? " has-mini" : ""}`}>
       <div className="aura" aria-hidden="true">
         <i />
         <i />
@@ -354,47 +461,54 @@ export default function App() {
           </button>
           <div className="chats">
             <div className="label">
+              <button className={`label-link ${page === "projects" && !docTask ? "on" : ""}`} onClick={() => { closePanel(); setPage("projects"); }} title="All projects">
+                Projects
+              </button>
+              <button className="mini" onClick={() => { closePanel(); setEditProject(null); setPage("newproject"); }} title="Create a project">
+                + New
+              </button>
+            </div>
+            {(projects ?? []).length === 0 && <p className="side-hint">Make a project to keep its chats, memories and code fixes together.</p>}
+            {(projects ?? []).map((p) => {
+              const open = openProjects.includes(p.slug);
+              const mine = j.chats.filter((c) => c.workspace === p.slug);
+              return (
+                <div key={p.slug} className={`proj${ws?.slug === p.slug ? " current" : ""}`}>
+                  <button className="proj-head" onClick={() => setOpen(p.slug, !open)} onDragOver={allowDrop} onDrop={(e) => dropChat(e, p.slug)} aria-expanded={open} title={p.folder || p.name}>
+                    <svg className={`chev${open ? " open" : ""}`} viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m9 6 6 6-6 6-1.4-1.4 4.6-4.6-4.6-4.6z" />
+                    </svg>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M3 6a1 1 0 0 1 1-1h6l2 2h8a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" />
+                    </svg>
+                    <b>{p.name}</b>
+                    <i role="button" aria-label={`Open ${p.name} page`} title="Project page: instructions, files, chats" onClick={(e) => { e.stopPropagation(); showProject(p.slug); }}>
+                      ⋯
+                    </i>
+                    <i role="button" aria-label={`New chat in ${p.name}`} title={`New chat in ${p.name}`} onClick={(e) => { e.stopPropagation(); newChatIn(p.slug); }}>
+                      +
+                    </i>
+                  </button>
+                  {open && (
+                    <div className="lib nested">
+                      {mine.length === 0 && (
+                        <button className="ghost" onClick={() => newChatIn(p.slug)}>
+                          <b>+ New chat</b>
+                        </button>
+                      )}
+                      {mine.map(chatRow)}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <div className="label">
               Chats
-              <button
-                className="mini"
-                onClick={() => {
-                  setPage("chat");
-                  closePanel();
-                  j.newChat();
-                }}
-                title="Start a new conversation"
-              >
+              <button className="mini" onClick={() => newChatIn("")} title="Start a conversation outside any project">
                 New
               </button>
             </div>
-            <div className="lib">
-              {j.chats.map((c) => (
-                <button
-                  key={c.id}
-                  className={j.chatId === c.id && page === "chat" && !docTask ? "on" : ""}
-                  onClick={() => {
-                    setPage("chat");
-                    closePanel();
-                    j.openChat(c.id);
-                  }}
-                  title={c.title || "New chat"}
-                >
-                  <b>{c.title || "New chat"}</b>
-                  <span>{day(c.updatedAt)}</span>
-                  <i
-                    role="button"
-                    aria-label={`Delete ${c.title || "New chat"}`}
-                    title="Delete"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      j.deleteChat(c.id);
-                    }}
-                  >
-                    ×
-                  </i>
-                </button>
-              ))}
-            </div>
+            <div className="lib" onDragOver={allowDrop} onDrop={(e) => dropChat(e, "")}>{looseChats.map(chatRow)}</div>
           </div>
           <nav className="nav">
             <div className="navgroup">
@@ -425,7 +539,31 @@ export default function App() {
             </button>
             </div>
             <div className="navgroup">
-              <div className="label">Workspace</div>
+              <div className="label">Apps</div>
+            <button
+              className={`navitem ${page === "apps" && !docTask ? "on" : ""}`}
+              onClick={() => {
+                closePanel();
+                setPage("apps");
+              }}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm11.5 0a4.500 4.500 0 1 1 0 9 4.500 4.500 0 0 1 0-9z" />
+              </svg>
+              All apps
+            </button>
+            <button
+              className={`navitem ${page === "day" && !docTask ? "on" : ""}`}
+              onClick={() => {
+                closePanel();
+                setPage("day");
+              }}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 7a5 5 0 1 1 0 10 5 5 0 0 1 0-10zM11 1h2v3h-2zm0 19h2v3h-2zM1 11h3v2H1zm19 0h3v2h-3zM4.2 5.6l1.4-1.4 2.1 2.1-1.4 1.4zm12.1 12.1 1.4-1.4 2.1 2.1-1.4 1.4zM5.6 19.8l-1.4-1.4 2.1-2.1 1.4 1.4zM17.7 7.7l-1.4-1.4 2.1-2.1 1.4 1.4z" />
+              </svg>
+              Today
+            </button>
             <button
               className={`navitem ${showLibrary && !docTask ? "on" : ""}`}
               onClick={() => {
@@ -591,6 +729,55 @@ export default function App() {
             onOpenTask={j.setReportId}
             onClose={() => setPage("chat")}
           />
+        ) : page === "apps" ? (
+          <AppsPage onOpen={(p) => { closePanel(); setPage(p); }} onOpenSettings={() => setShowSettings(true)} onClose={() => setPage("chat")} />
+        ) : page === "day" ? (
+          <DayPage
+            tasks={j.tasks}
+            userName={j.settings?.userName?.trim() ?? ""}
+            onBrief={() => {
+              setPage("chat");
+              j.sendTyped("Brief me on my day: my schedule, mail that needs me, and what you're working on.");
+            }}
+            onOpenTask={(id) => { setPage("chat"); j.setReportId(id); }}
+            onOpenMail={() => setPage("mail")}
+            onOpenCalendar={() => setPage("calendar")}
+            onOpenSettings={() => setShowSettings(true)}
+            onClose={() => setPage("chat")}
+          />
+        ) : page === "projects" ? (
+          <ProjectsPage
+            projects={projects ?? []}
+            chats={j.chats}
+            onNew={() => { setEditProject(null); setPage("newproject"); }}
+            onOpen={showProject}
+            onNewChat={newChatIn}
+            onEdit={(slug) => { setEditProject(slug); setPage("newproject"); }}
+            onClose={() => setPage("chat")}
+          />
+        ) : page === "project" && (projects ?? []).find((p) => p.slug === viewProject) ? (
+          <ProjectPage
+            key={viewProject!}
+            project={(projects ?? []).find((p) => p.slug === viewProject)!}
+            chats={j.chats}
+            onChanged={() => invoke<Workspace[]>("list_workspaces").then((l) => { setProjects(l); window.dispatchEvent(new Event("jarvis-workspace")); }).catch(() => {})}
+            onOpenChat={(id) => { setOpen(viewProject!, true); setPage("chat"); closePanel(); j.openChat(id); }}
+            onNewChat={() => newChatIn(viewProject!)}
+            onEdit={() => { setEditProject(viewProject); setPage("newproject"); }}
+            onClose={() => setPage("projects")}
+          />
+        ) : page === "newproject" ? (
+          <NewProjectPage
+            key={editProject ?? "new"}
+            project={(projects ?? []).find((p) => p.slug === editProject) ?? null}
+            onSaved={projectSaved}
+            onClose={() => {
+              const back = editProject;
+              setEditProject(null);
+              setViewProject(back);
+              setPage(back ? "project" : "projects");
+            }}
+          />
         ) : page === "memory" ? (
           <MemoryPage onClose={() => setPage("chat")} />
         ) : page === "knowhow" ? (
@@ -626,6 +813,11 @@ export default function App() {
         ) : page === "youtube" ? (
           <YouTubePage
             intent={ytIntent}
+            playing={ytPlaying}
+            onPlay={setYtPlaying}
+            onSlot={setYtSlot}
+            audioOnly={ytAudioOnly}
+            onAudioOnly={audioOnly}
             onAsk={(t) => {
               setPage("chat");
               j.sendTyped(t);
@@ -648,6 +840,37 @@ export default function App() {
           />
         ) : (
           <section className="center">
+            <div className="chat-proj">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 6a1 1 0 0 1 1-1h6l2 2h8a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" />
+              </svg>
+              <select
+                value={ws?.slug ?? ""}
+                onChange={(e) => j.moveChat(j.chatId, e.target.value).catch((err) => j.setError(String(err)))}
+                aria-label="Project for this chat"
+                title="Move this chat to a project"
+              >
+                <option value="">No project</option>
+                {(projects ?? []).map((p) => (
+                  <option key={p.slug} value={p.slug}>{p.name}</option>
+                ))}
+              </select>
+              {ws?.folder && <span className="muted small" title={ws.folder}>{ws.folder.replace(/^\/Users\/[^/]+/, "~")}</span>}
+              <span className="grow" />
+              <select
+                className="lang-pick"
+                value={["", "en", "ne", "hi"].includes(j.settings?.language ?? "") ? j.settings?.language ?? "" : "other"}
+                onChange={(e) => e.target.value !== "other" && j.setLanguage(e.target.value).catch((err) => j.setError(String(err)))}
+                aria-label="Language Jarvis speaks"
+                title="Language Jarvis speaks"
+              >
+                <option value="">Auto language</option>
+                <option value="en">English</option>
+                <option value="ne">नेपाली</option>
+                <option value="hi">हिन्दी</option>
+                {!["", "en", "ne", "hi"].includes(j.settings?.language ?? "") && <option value="other">{j.settings?.language}</option>}
+              </select>
+            </div>
             <div className="stage">
               <Orb source={j.orb} size={panelTask ? 150 : 280} />
               <div className="state">
@@ -864,6 +1087,7 @@ export default function App() {
         </div>
       )}
       <ApprovalCard />
+      <YtDock playing={ytPlaying} slot={page === "youtube" ? ytSlot : null} audioOnly={ytAudioOnly} onAudioOnly={audioOnly} jarvisSpeaking={speaking} onClose={() => setYtPlaying(null)} onOpenPage={() => { closePanel(); setPage("youtube"); }} />
 
       {showSettings && j.settings && (
         <SettingsPanel initial={j.settings} onClose={() => setShowSettings(false)} onSaved={() => j.reloadSettings()} />

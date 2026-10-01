@@ -37,13 +37,34 @@ function ago(iso: string) {
 }
 
 /** YouTube inside Jarvis: search, browse your subscriptions and likes, and play videos in a panel. */
-export default function YouTubePage({ intent, onAsk, onOpenSettings, onClose }: { intent: YtIntent | null; onAsk: (text: string) => void; onOpenSettings: () => void; onClose: () => void }) {
+export default function YouTubePage({
+  intent,
+  playing,
+  onPlay,
+  onSlot,
+  audioOnly,
+  onAudioOnly,
+  onAsk,
+  onOpenSettings,
+  onClose,
+}: {
+  intent: YtIntent | null;
+  /** The video playing now. It lives in the app, so it keeps playing when this page closes. */
+  playing: YtItem | null;
+  onPlay: (item: YtItem | null) => void;
+  /** Where the player should sit on this page. */
+  onSlot: (el: HTMLElement | null) => void;
+  audioOnly: boolean;
+  onAudioOnly: (on: boolean) => void;
+  onAsk: (text: string) => void;
+  onOpenSettings: () => void;
+  onClose: () => void;
+}) {
   const google = useGoogle("youtube");
   const connected = !!google.state?.connected;
   const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("search");
   const [typed, setTyped] = useState("");
   const [items, setItems] = useState<YtItem[] | null>(null);
-  const [playing, setPlaying] = useState<YtItem | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const seq = useRef(0);
@@ -89,12 +110,12 @@ export default function YouTubePage({ intent, onAsk, onOpenSettings, onClose }: 
     }
     if (intent.play) {
       const known = intent.items?.find((i) => i.id === intent.play);
-      setPlaying(known ?? { kind: "video", id: intent.play, title: "", channel: "", published: "", description: "", link: `https://www.youtube.com/watch?v=${intent.play}`, thumbnail: "" });
+      onPlay(known ?? { kind: "video", id: intent.play, title: "", channel: "", published: "", description: "", link: `https://www.youtube.com/watch?v=${intent.play}`, thumbnail: "" });
     }
-  }, [intent, connected, search]);
+  }, [intent, connected, search, onPlay]);
 
   const pick = (i: YtItem) => {
-    if (i.kind === "video") setPlaying(i);
+    if (i.kind === "video") onPlay(i);
     else if (i.kind === "channel") {
       setTab("search");
       search(i.title);
@@ -150,16 +171,7 @@ export default function YouTubePage({ intent, onAsk, onOpenSettings, onClose }: 
           <div className={`yt ${playing ? "playing" : ""}`}>
             {playing && (
               <div className="yt-player">
-                <div className="yt-frame">
-                  <iframe
-                    key={playing.id}
-                    src={`https://www.youtube-nocookie.com/embed/${encodeURIComponent(playing.id)}?autoplay=1&rel=0`}
-                    title={playing.title || "YouTube video"}
-                    allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-                    referrerPolicy="strict-origin-when-cross-origin"
-                    allowFullScreen
-                  />
-                </div>
+                <div className="yt-frame" ref={onSlot} />
                 <h3>{playing.title || "Playing"}</h3>
                 {playing.channel && (
                   <p className="muted small">
@@ -174,7 +186,10 @@ export default function YouTubePage({ intent, onAsk, onOpenSettings, onClose }: 
                   <button className="mini" onClick={() => onAsk(`Tell me about this YouTube video: ${playing.link}`)}>
                     Ask Jarvis about it
                   </button>
-                  <button className="mini" onClick={() => setPlaying(null)}>
+                  <button className="mini" onClick={() => onAudioOnly(!audioOnly)} aria-pressed={audioOnly}>
+                    {audioOnly ? "Show video" : "Audio only"}
+                  </button>
+                  <button className="mini" onClick={() => onPlay(null)}>
                     Close player
                   </button>
                 </div>

@@ -45,6 +45,18 @@ export const LANGUAGES: Language[] = [
   { code: "zh-Hans", name: "Chinese (Simplified)" },
 ];
 
+/**
+ * Extra rules for languages the voice model tends to get wrong. Nepali and Hindi share a script and
+ * many words, and people mix them with English, so each gets its own guide.
+ */
+export function languageGuide(code: string): string {
+  if (code === "ne")
+    return `NEPALI: Reply in Nepali (नेपाली), written in Devanagari and spoken naturally as people in Nepal speak it: polite "तपाईं" forms ("गर्नुहोस्", "हुन्छ", "छ", "हो"), never Hindi forms like "है", "करो", "आप", "क्या". Everyday English words (app, email, file, project) may stay in English, the way Nepali speakers mix them. If ${"{name}"} writes or says Nepali in Roman letters, understand it and still answer in Devanagari. Read numbers, dates and times the Nepali way ("बिहान ८ बजे").`;
+  if (code === "hi")
+    return `HINDI: Reply in Hindi (हिन्दी), written in Devanagari, in everyday spoken Hindi (Hindustani) rather than formal Sanskritised Hindi: "है", "करो/कीजिए", "आप". Keep common English words (app, email, file, project) in English, the way Hindi speakers mix them. If ${"{name}"} writes Hindi in Roman letters (Hinglish), understand it and answer in Devanagari. It is not Nepali: no "छ", "गर्नुहोस्" or "तपाईं".`;
+  return "";
+}
+
 /** Display name for a stored code; empty code means "match whoever is talking". */
 export function languageName(code: string): string {
   return LANGUAGES.find((l) => l.code === code)?.name ?? "";

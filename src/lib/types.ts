@@ -79,6 +79,9 @@ export interface Chat {
   createdAt: number;
   updatedAt: number;
   messages: Msg[];
+  /** Slug of the project (workspace) it belongs to, or "". */
+  workspace: string;
+  pinned: boolean;
 }
 
 export interface ChatSummary {
@@ -87,6 +90,10 @@ export interface ChatSummary {
   createdAt: number;
   updatedAt: number;
   count: number;
+  workspace: string;
+  pinned: boolean;
+  /** The user renamed it, so Jarvis keeps the name. */
+  titleLocked: boolean;
 }
 
 export type OrbMode = "idle" | "listen" | "speak" | "think";
@@ -221,8 +228,17 @@ export interface Workspace {
   description: string;
   folder: string;
   verify: string[];
+  /** How Jarvis should work in every chat in the project. */
+  instructions: string;
   url: string;
   created: number;
+}
+
+export interface ProjectFile {
+  name: string;
+  size: number;
+  /** Seconds since 1970. */
+  modified: number;
 }
 
 export interface Memory {
