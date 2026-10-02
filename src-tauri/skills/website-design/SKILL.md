@@ -7,6 +7,8 @@ description: "Design and build a polished, distinctive, accessible website from 
 
 Build sites that look like a good designer made them for this one client, not like a template. Follow this in order. Open `references/tokens-and-base.css` and `references/page-skeleton.html` first: start from them instead of a blank file, and change them to fit the brief.
 
+**Read `references/lessons.md` before you design, if it exists.** It lists what Jarvis's visual director found wrong in earlier sites (headlines wrapping to five lines, badges poking past the edge, dead zones in cards, low-contrast emphasis). Every rule in it was learned from a real mistake: don't repeat them. After you finish, the visual director will render your site at desktop, tablet and phone sizes, review it like a design director, and ask for fixes, so build it as if that review is coming.
+
 ## 1. Understand before you draw
 
 Read the whole brief (every file in the folder, the markdown most of all). Then write five lines at the top of `DESIGN.md` in the project folder:

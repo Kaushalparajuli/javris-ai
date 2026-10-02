@@ -4,6 +4,7 @@ mod applog;
 mod capture;
 mod chats;
 mod context;
+mod director;
 mod fileindex;
 mod google;
 mod google_docs;
@@ -181,6 +182,11 @@ pub fn run() {
             preview::preview_info,
             preview::preview_files,
             preview::preview_read,
+            director::director_capture,
+            director::director_shot,
+            director::director_save,
+            director::director_load,
+            director::director_learn,
             workspaces::project_read_file,
             workspaces::delete_workspace,
             workspaces::set_active_workspace,

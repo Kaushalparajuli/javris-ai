@@ -292,6 +292,16 @@ pub fn preview_read(app: AppHandle, folder: String, path: String) -> Result<Stri
     read_text(&dir, &path)
 }
 
+/// The page address for a project folder's site, or an error if it has no page yet.
+pub(crate) fn page_url(app: &AppHandle, folder: &str) -> Result<String, String> {
+    let info = preview_info(app.clone(), folder.to_string())?;
+    if info.has_page {
+        Ok(info.url)
+    } else {
+        Err("There's no web page in this folder yet.".into())
+    }
+}
+
 /// Where to see the site in `folder` (a project folder under the research folder), and a number
 /// that changes when its files do.
 #[tauri::command]

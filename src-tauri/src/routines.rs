@@ -1026,7 +1026,7 @@ const BUILTIN: &[(&str, &[(&str, &str)])] = &[(
     ],
 )];
 /// Raise this when the built-in files change, so installs that haven't edited them get the new ones.
-const BUILTIN_VERSION: u32 = 1;
+const BUILTIN_VERSION: u32 = 2;
 
 /// A small stable hash (FNV-1a), to tell whether the user has edited a built-in skill.
 fn fingerprint(text: &str) -> u64 {
@@ -1067,8 +1067,26 @@ fn install_builtin_into(base: &Path, version: u32) {
     }
 }
 
+/// Design rules the visual director has already taught, so the first site benefits too. Written once,
+/// when the lessons file doesn't exist yet; after that the director adds to it and the user edits it.
+const SEED_LESSONS: &[&str] = &[
+    "Never cap a large heading's max-width in ch below what its words need: 10 to 12ch on a 6 to 7rem headline forces five lines with a lone word on the last. Aim for three lines at desktop, use text-wrap: balance, and keep the main button above the fold.",
+    "Keep every badge, label and decorative tag inside its card or container. Anything positioned with a negative right or left offset (right: -18px) pokes past the page edge on real screens.",
+    "Don't give a card a large min-height and justify-content: space-between when it has little inside; it leaves a void in the middle. Let content flow from the top and size the card to what is in it.",
+    "A section's heading and the paragraph that introduces it belong next to each other. Don't strand the paragraph at the far end of a wide grid row with the heading squeezed into a narrow column.",
+    "Coloured emphasis words on a light background need 4.5:1 contrast. A lime or mid-green that looks fresh on dark (about 2:1 on off-white) needs a deeper shade on light sections.",
+    "Mockups and illustrations may bleed off a card edge on one side only, never two, and any text inside them (a browser address, a label) must stay fully visible.",
+    "Use one inner margin for every card in a set. A wordmark or label that sits 20px from the top of one card and 64px in another looks like a mistake.",
+    "Body and label text is never under 11.5px, and tap targets such as logos and email links are at least 40px tall on phones.",
+];
+
 pub fn install_builtin_skills(app: &AppHandle) {
     install_builtin_into(&skills_dir(app), BUILTIN_VERSION);
+    let lessons = crate::director::lessons_file(app);
+    if !lessons.exists() {
+        let seed: Vec<String> = SEED_LESSONS.iter().map(|s| s.to_string()).collect();
+        let _ = crate::director::add_lessons_to(&lessons, &seed);
+    }
 }
 
 /// Give a worker the know-how it should follow: copies each one into `dir`/know-how/<slug>.

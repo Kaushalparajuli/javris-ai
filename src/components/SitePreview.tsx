@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { DirectorState } from "../lib/director";
 import { highlight, languageOf } from "../lib/highlight";
+import DirectorPanel from "./DirectorPanel";
 
 interface Info {
   baseUrl: string;
@@ -29,8 +31,8 @@ const kb = (n: number) => (n < 1024 ? `${n} B` : `${Math.round(n / 1024)} KB`);
  * The site being built, live: a Preview tab (the running site, in a frame) and a Code tab (the files
  * the worker has written, with syntax colours). Both follow the worker as it saves.
  */
-export default function SitePreview({ folder, running }: { folder: string; running: boolean }) {
-  const [tab, setTab] = useState<"preview" | "code">("preview");
+export default function SitePreview({ folder, running, director, onReview }: { folder: string; running: boolean; director?: DirectorState; onReview: () => void }) {
+  const [tab, setTab] = useState<"preview" | "code" | "review">("preview");
   const [info, setInfo] = useState<Info | null>(null);
   const [shown, setShown] = useState(0);
   const [size, setSize] = useState<(typeof SIZES)[number]["id"]>("desktop");
@@ -118,13 +120,16 @@ export default function SitePreview({ folder, running }: { folder: string; runni
           <button role="tab" aria-selected={tab === "code"} className={tab === "code" ? "on" : ""} onClick={() => setTab("code")}>
             Code{files.length ? ` · ${files.length}` : ""}
           </button>
+          <button role="tab" aria-selected={tab === "review"} className={tab === "review" ? "on" : ""} onClick={() => setTab("review")}>
+            Review{director?.rounds.length ? ` · ${director.rounds[director.rounds.length - 1].review?.score ?? "…"}` : director && director.status !== "done" && director.status !== "error" ? " · …" : ""}
+          </button>
         </div>
         <span className="sp-title">
           <i className={running ? "live" : ""} />
           {running ? "Updating live" : ""}
         </span>
         <span className="grow" />
-        {tab === "preview" ? (
+        {tab === "review" ? null : tab === "preview" ? (
           <>
             <div className="seg" role="group" aria-label="Screen size">
               {SIZES.map((s) => (
@@ -162,7 +167,11 @@ export default function SitePreview({ folder, running }: { folder: string; runni
         )}
       </div>
 
-      {tab === "preview" ? (
+      {tab === "review" ? (
+        <div className="sp-review">
+          <DirectorPanel state={director} running={running} onReview={onReview} />
+        </div>
+      ) : tab === "preview" ? (
         <div className="sp-stage">
           {error ? (
             <p className="muted sp-note">{running ? "Waiting for the worker to create the project folder…" : error}</p>

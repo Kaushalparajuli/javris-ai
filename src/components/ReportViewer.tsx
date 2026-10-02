@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { safeFileName } from "../lib/exportDocx";
 import { printableHtml } from "../lib/exportPdf";
 import { askSavePath, fileNameOf } from "../lib/saveAs";
+import type { DirectorState } from "../lib/director";
 import type { Task } from "../lib/types";
 import BrowserView from "./BrowserView";
 import SitePreview from "./SitePreview";
@@ -24,8 +25,13 @@ export default function ReportViewer({
   expanded,
   onToggleExpand,
   onClose,
+  director,
+  onReview,
 }: {
   task: Task;
+  /** The visual director's work on this site, if it has looked at it. */
+  director?: DirectorState;
+  onReview: () => void;
   /** A browser task is driving Jarvis's browser right now. */
   browserBusy: boolean;
   expanded: boolean;
@@ -78,7 +84,16 @@ export default function ReportViewer({
     }
   };
 
-  const steps = task.steps.slice(-6);
+  // A website build shows its preview first; what the worker is doing goes underneath it.
+  const hasPreview = task.kind === "code" && !!task.project && task.project.includes("/projects/");
+  const steps = task.steps.slice(hasPreview ? -80 : -6);
+  const logRef = useRef<HTMLDivElement>(null);
+  const stuck = useRef(true);
+  // Keep the newest step in view, unless the user scrolled up to read earlier ones.
+  useEffect(() => {
+    const el = logRef.current;
+    if (el && stuck.current) el.scrollTop = el.scrollHeight;
+  }, [steps.length, task.steps[task.steps.length - 1]?.done]);
 
   const exportPdf = async () => {
     try {
@@ -115,7 +130,7 @@ export default function ReportViewer({
         <PanelControls expanded={expanded} onToggleExpand={onToggleExpand} onClose={onClose} />
       </header>
 
-      {running && (
+      {running && !hasPreview && (
         <ul className="steps live-steps">
           {steps.length === 0 && (
             <li className="now">
@@ -136,7 +151,43 @@ export default function ReportViewer({
       )}
 
       {task.kind === "browser" && <BrowserView canUse={!browserBusy} />}
-      {task.kind === "code" && task.project && task.project.includes("/projects/") && <SitePreview folder={task.project} running={running} />}
+      {hasPreview && <SitePreview folder={task.project!} running={running} director={director} onReview={onReview} />}
+      {hasPreview && (running || steps.length > 0) && (
+        <details className="activity" open={running}>
+          <summary>
+            Worker activity
+            <span className="muted small">
+              {running ? " · live" : ""} · {task.steps.length} step{task.steps.length === 1 ? "" : "s"}
+            </span>
+          </summary>
+          <div
+            className="activity-log"
+            ref={logRef}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              stuck.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+            }}
+          >
+            <ul className="steps">
+              {steps.length === 0 && (
+                <li className="now">
+                  <i />
+                  <span>Starting the worker…</span>
+                </li>
+              )}
+              {steps.map((s, i) => (
+                <li key={s.id || i} className={s.done ? "done" : "now"}>
+                  <i />
+                  <span>
+                    {s.label}
+                    {s.detail && <small>{s.detail}</small>}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </details>
+      )}
 
       {task.kind === "image" ? (
         <div className="gallery">

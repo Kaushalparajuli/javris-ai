@@ -1036,6 +1036,8 @@ export default function App() {
                 key={panelTask.id}
                 task={panelTask}
                 browserBusy={j.tasks.some((t) => t.kind === "browser" && t.status === "running")}
+                director={j.director[panelTask.id]}
+                onReview={() => j.reviewSite(panelTask.id)}
                 expanded={expanded}
                 onToggleExpand={() => setExpanded((x) => !x)}
                 onClose={closePanel}
