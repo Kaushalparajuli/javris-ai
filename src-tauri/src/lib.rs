@@ -15,6 +15,7 @@ mod mac;
 mod mini;
 mod mic;
 mod policy;
+mod preview;
 mod routines;
 mod search;
 mod settings;
@@ -94,6 +95,7 @@ pub fn run() {
         .manage(context::ContextState::default())
         .setup(move |app| {
             tasks::load_index(app.handle());
+            routines::install_builtin_skills(app.handle());
             memory::import_notes(app.handle());
             tauri::async_runtime::spawn(memory::embed_missing(app.handle().clone()));
             tauri::async_runtime::spawn(fileindex::rescan(app.handle().clone()));
@@ -174,6 +176,11 @@ pub fn run() {
             workspaces::project_add_files,
             workspaces::project_remove_file,
             workspaces::project_import_document,
+            workspaces::project_sites,
+            workspaces::project_new_site,
+            preview::preview_info,
+            preview::preview_files,
+            preview::preview_read,
             workspaces::project_read_file,
             workspaces::delete_workspace,
             workspaces::set_active_workspace,

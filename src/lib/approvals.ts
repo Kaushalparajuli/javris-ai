@@ -8,6 +8,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
+import { getMode } from "./mode";
 import type { Settings } from "./types";
 
 export type Risk = "read" | "search" | "write" | "send" | "delete" | "purchase" | "deploy" | "control";
@@ -34,6 +35,20 @@ export const DEFAULT_RULE: Record<Risk, Rule> = {
   deploy: "ask",
   control: "ask",
 };
+
+/**
+ * The rule that applies right now: the Settings rule for this kind of action, adjusted by the mode
+ * under the prompt box. Manual asks for every change; Auto lets file and document changes through;
+ * Show lets nothing that changes anything through. A rule of "never" always holds.
+ */
+export function effectiveRule(risk: Risk, settings: Settings | null): Rule {
+  const base = ruleFor(risk, settings);
+  if (risk === "read" || risk === "search" || base === "never") return base;
+  const mode = getMode();
+  if (mode === "show") return "never";
+  if (mode === "manual") return "ask";
+  return risk === "write" ? "auto" : base;
+}
 
 /** The rule in force for a kind of action. Anything the setting can't allow falls back to asking. */
 export function ruleFor(risk: Risk, settings: Settings | null): Rule {
@@ -81,7 +96,7 @@ export function requestApproval(
   req: { tool: string; risk: Risk; title: string; detail: string; okLabel?: string },
   settings: Settings | null,
 ): Promise<{ ok: boolean; decision: Decision }> {
-  const rule = ruleFor(req.risk, settings);
+  const rule = effectiveRule(req.risk, settings);
   const log = (decision: Decision) => audit({ tool: req.tool, risk: req.risk, decision, summary: req.title, detail: req.detail.slice(0, 600) });
   if (rule === "never") {
     log("blocked");

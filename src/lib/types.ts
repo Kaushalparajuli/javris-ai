@@ -236,6 +236,7 @@ export interface Workspace {
 
 export interface ProjectFile {
   name: string;
+  isDir: boolean;
   size: number;
   /** Seconds since 1970. */
   modified: number;

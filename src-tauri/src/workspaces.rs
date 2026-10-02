@@ -5,7 +5,7 @@
 
 use crate::settings;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
@@ -63,6 +63,7 @@ pub fn active(app: &AppHandle) -> Option<Workspace> {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectFile {
     pub name: String,
+    pub is_dir: bool,
     pub size: u64,
     /// Seconds since 1970.
     pub modified: u64,
@@ -96,11 +97,11 @@ pub(crate) fn list_files(app: &AppHandle, slug: &str) -> Vec<ProjectFile> {
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
             let meta = e.metadata().ok()?;
-            if !meta.is_file() || name.starts_with('.') {
+            if name.starts_with('.') {
                 return None;
             }
             let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-            Some(ProjectFile { name, size: meta.len(), modified })
+            Some(ProjectFile { name, is_dir: meta.is_dir(), size: if meta.is_dir() { 0 } else { meta.len() }, modified })
         })
         .collect();
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -154,11 +155,67 @@ pub fn project_remove_file(app: AppHandle, slug: String, name: String) -> Result
     Ok(list_files(&app, &slug))
 }
 
-/// Copy a document Jarvis wrote or opened into the project as `brief.md`, so the code worker can
-/// build from it. A taken name gets a number. Returns the file's name.
+/// The websites in a project: folders that hold a web page. (A site built straight into the project
+/// folder isn't listed; it's the project itself.)
+pub(crate) fn list_sites(app: &AppHandle, slug: &str) -> Vec<String> {
+    let Ok(dir) = files_dir(app, slug) else { return vec![] };
+    sites_in(&dir)
+}
+
+fn sites_in(dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.metadata().map(|m| m.is_dir()).unwrap_or(false))
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .filter(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten().any(|f| f.file_name().to_string_lossy().ends_with(".html")))
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    out.sort();
+    out
+}
+
+/// A folder name for a new site that nothing in `dir` uses yet.
+fn free_site_name(dir: &Path, name: &str) -> String {
+    let base = {
+        let s = slug(name);
+        if s.is_empty() { "website".to_string() } else { s }
+    };
+    let mut folder = base.clone();
+    let mut n = 2;
+    while dir.join(&folder).exists() {
+        folder = format!("{base}-{n}");
+        n += 1;
+    }
+    folder
+}
+
 #[tauri::command]
-pub fn project_import_document(app: AppHandle, slug: String, task_id: u32) -> Result<String, String> {
+pub fn project_sites(app: AppHandle, slug: String) -> Vec<String> {
+    list_sites(&app, &slug)
+}
+
+/// A new, empty folder for a website inside the project, named after it ("Modern IT Company" becomes
+/// modern-it-company; a taken name gets -2, -3…). Earlier sites are never reused. Returns the folder.
+#[tauri::command]
+pub fn project_new_site(app: AppHandle, slug: String, name: String) -> Result<String, String> {
     let dir = files_dir(&app, &slug)?;
+    let path = dir.join(free_site_name(&dir, &name));
+    std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
+/// Copy a document Jarvis wrote or opened into the project (or into one of its site folders, if
+/// `subdir` names one) as `brief.md`, so the code worker can build from it. A taken name gets a
+/// number. Returns the file's name.
+#[tauri::command]
+pub fn project_import_document(app: AppHandle, slug: String, task_id: u32, subdir: Option<String>) -> Result<String, String> {
+    let mut dir = files_dir(&app, &slug)?;
+    if let Some(sub) = subdir.filter(|s| !s.is_empty()) {
+        dir = dir.join(safe_name(&sub).ok_or("That folder name can't be used.")?);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
     let task = crate::tasks::get_task(&app, task_id).ok_or("There's no such document.")?;
     let from = PathBuf::from(&task.dir).join(crate::tasks::DOCUMENT_FILE);
     let mut name = "brief.md".to_string();
@@ -281,7 +338,7 @@ pub fn set_active_workspace(app: AppHandle, slug: String) -> Result<Option<Works
 
 #[cfg(test)]
 mod tests {
-    use super::{safe_name, slug};
+    use super::{free_site_name, safe_name, sites_in, slug};
 
     #[test]
     fn names_become_folder_names() {
@@ -289,6 +346,36 @@ mod tests {
         assert_eq!(slug("  G-Soft!! "), "g-soft");
         assert_eq!(slug("../etc"), "etc");
         assert_eq!(slug("!!!"), "");
+    }
+
+    #[test]
+    fn a_new_site_never_reuses_an_existing_folder() {
+        let tmp = std::env::temp_dir().join(format!("jarvis-sites-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert_eq!(free_site_name(&tmp, "Modern IT Company website"), "modern-it-company-website");
+        std::fs::create_dir_all(tmp.join("modern-it-company-website")).unwrap();
+        assert_eq!(free_site_name(&tmp, "Modern IT Company website"), "modern-it-company-website-2");
+        std::fs::create_dir_all(tmp.join("modern-it-company-website-2")).unwrap();
+        assert_eq!(free_site_name(&tmp, "Modern IT Company website"), "modern-it-company-website-3");
+        assert_eq!(free_site_name(&tmp, "!!!"), "website");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn only_folders_with_a_web_page_count_as_sites() {
+        let tmp = std::env::temp_dir().join(format!("jarvis-sitelist-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        for d in ["happy-panda", "it-company", "css", "assets", ".hidden"] {
+            std::fs::create_dir_all(tmp.join(d)).unwrap();
+        }
+        std::fs::write(tmp.join("happy-panda/index.html"), "x").unwrap();
+        std::fs::write(tmp.join("it-company/home.html"), "x").unwrap();
+        std::fs::write(tmp.join("css/styles.css"), "x").unwrap();
+        std::fs::write(tmp.join(".hidden/index.html"), "x").unwrap();
+        std::fs::write(tmp.join("index.html"), "the project's own site").unwrap();
+        assert_eq!(sites_in(&tmp), vec!["happy-panda", "it-company"]);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

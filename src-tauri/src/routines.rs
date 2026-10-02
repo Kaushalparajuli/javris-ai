@@ -1014,6 +1014,63 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+// ---------- built-in know-how ----------
+
+/// Know-how that ships with Jarvis: (folder name, [(file path, contents)]).
+const BUILTIN: &[(&str, &[(&str, &str)])] = &[(
+    "website-design",
+    &[
+        ("SKILL.md", include_str!("../skills/website-design/SKILL.md")),
+        ("references/tokens-and-base.css", include_str!("../skills/website-design/references/tokens-and-base.css")),
+        ("references/page-skeleton.html", include_str!("../skills/website-design/references/page-skeleton.html")),
+    ],
+)];
+/// Raise this when the built-in files change, so installs that haven't edited them get the new ones.
+const BUILTIN_VERSION: u32 = 1;
+
+/// A small stable hash (FNV-1a), to tell whether the user has edited a built-in skill.
+fn fingerprint(text: &str) -> u64 {
+    text.bytes().fold(0xcbf29ce484222325, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3))
+}
+
+/// Put the built-in skills in `base` (the skills folder). A skill that isn't there is added. One that
+/// is there is replaced by a newer built-in version only if its SKILL.md is still exactly what Jarvis
+/// installed, so nothing the user edited is ever overwritten.
+fn install_builtin_into(base: &Path, version: u32) {
+    for (slug, files) in BUILTIN {
+        let dir = base.join(slug);
+        let skill = files.iter().find(|(p, _)| *p == "SKILL.md").map(|(_, c)| *c).unwrap_or("");
+        let marker = dir.join(".builtin");
+        let current = std::fs::read_to_string(dir.join("SKILL.md")).ok();
+        let write = match (&current, std::fs::read_to_string(&marker).ok()) {
+            (None, _) => true,
+            (Some(text), Some(m)) => {
+                let mut parts = m.lines();
+                let (v, h) = (parts.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0), parts.next().and_then(|h| h.parse::<u64>().ok()));
+                v < version && h == Some(fingerprint(text))
+            }
+            // Someone made a skill with this name themselves: leave it alone.
+            (Some(_), None) => false,
+        };
+        if !write {
+            continue;
+        }
+        for (path, content) in *files {
+            let to = dir.join(path);
+            if let Some(parent) = to.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(to, content);
+        }
+        let _ = std::fs::remove_file(dir.join(".draft"));
+        let _ = std::fs::write(marker, format!("{version}\n{}\n", fingerprint(skill)));
+    }
+}
+
+pub fn install_builtin_skills(app: &AppHandle) {
+    install_builtin_into(&skills_dir(app), BUILTIN_VERSION);
+}
+
 /// Give a worker the know-how it should follow: copies each one into `dir`/know-how/<slug>.
 /// Returns the ones copied. Unknown names and unreviewed drafts are left out.
 pub(crate) fn copy_know_how(app: &AppHandle, slugs: &[String], dir: &Path) -> Vec<String> {
@@ -1039,7 +1096,7 @@ pub(crate) fn know_how_rule(slugs: &[String]) -> String {
     }
     let files: Vec<String> = slugs.iter().map(|s| format!("know-how/{s}/SKILL.md")).collect();
     format!(
-        "\nKnow-how to follow: {}. Read it first and follow its steps. Its templates/ folder, if there is one, shows the expected shape. \
+        "\nKnow-how to follow: {}. Read it first and follow its steps. Its templates/ and references/ folders, if there are any, hold files to start from and copy. \
          Its examples/ folder shows earlier results: learn from their structure, but don't reuse their facts.\n",
         files.join(", ")
     )
@@ -1191,5 +1248,59 @@ mod tests {
         assert!(valid_slug("compare-competitors").is_ok());
         assert!(valid_slug("../etc").is_err());
         assert!(valid_slug("").is_err());
+    }
+}
+
+#[cfg(test)]
+mod builtin_tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("jarvis-skills-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn website_design_is_installed_with_its_reference_files() {
+        let base = tmp("fresh");
+        install_builtin_into(&base, 1);
+        let dir = base.join("website-design");
+        let (name, description, body) = parse_skill(&std::fs::read_to_string(dir.join("SKILL.md")).unwrap());
+        assert_eq!(name, "Website design");
+        assert!(description.contains("website"));
+        assert!(body.contains("references/tokens-and-base.css"));
+        assert!(dir.join("references/tokens-and-base.css").is_file() && dir.join("references/page-skeleton.html").is_file());
+        // It shows up in the Know-how list and can be handed to a worker.
+        let k = read_skill(&dir).unwrap();
+        assert!(!k.draft && k.files.contains(&"references/page-skeleton.html".to_string()));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn newer_versions_replace_only_untouched_copies() {
+        let base = tmp("update");
+        install_builtin_into(&base, 1);
+        let skill = base.join("website-design/SKILL.md");
+        // Untouched: a newer version replaces it (simulated by changing the file the same way Jarvis would have).
+        let original = std::fs::read_to_string(&skill).unwrap();
+        install_builtin_into(&base, 2);
+        assert_eq!(std::fs::read_to_string(&skill).unwrap(), original);
+        assert!(std::fs::read_to_string(base.join("website-design/.builtin")).unwrap().starts_with("2\n"));
+        // Edited by the user: never overwritten, even by a newer version.
+        std::fs::write(&skill, "---\nname: \"Mine\"\ndescription: \"x\"\n---\n\nMy own rules.\n").unwrap();
+        install_builtin_into(&base, 3);
+        assert!(std::fs::read_to_string(&skill).unwrap().contains("My own rules."));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_users_own_skill_with_the_same_name_is_left_alone() {
+        let base = tmp("own");
+        std::fs::create_dir_all(base.join("website-design")).unwrap();
+        std::fs::write(base.join("website-design/SKILL.md"), "---\nname: \"Mine\"\ndescription: \"x\"\n---\n\nMine.\n").unwrap();
+        install_builtin_into(&base, 5);
+        assert!(std::fs::read_to_string(base.join("website-design/SKILL.md")).unwrap().contains("Mine."));
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -113,16 +113,16 @@ export default function ProjectPage({
                 <button className="mini" onClick={addFiles} disabled={busy}>{busy ? "Adding…" : "+ Add files"}</button>
               </div>
               {files.length === 0 ? (
-                <p className="muted small">Add notes, briefs or data. Jarvis can read the text files in any chat in this project.</p>
+                <p className="muted small">Add notes, briefs or data. Jarvis can read the text files in any chat in this project. Each website it builds gets its own folder here.</p>
               ) : (
                 <ul className="pp-files">
                   {files.map((f) => (
                     <li key={f.name}>
                       <button className="pp-fname" title="Show in Finder" onClick={() => revealItemInDir(`${project.folder}/${f.name}`).catch(() => {})}>
-                        {f.name}
+                        {f.isDir ? `📁 ${f.name}/` : f.name}
                       </button>
-                      <span className="muted small">{size(f.size)}</span>
-                      <button className="mini danger" onClick={() => removeFile(f.name)} aria-label={`Remove ${f.name}`}>Remove</button>
+                      <span className="muted small">{f.isDir ? "folder" : size(f.size)}</span>
+                      {!f.isDir && <button className="mini danger" onClick={() => removeFile(f.name)} aria-label={`Remove ${f.name}`}>Remove</button>}
                     </li>
                   ))}
                 </ul>

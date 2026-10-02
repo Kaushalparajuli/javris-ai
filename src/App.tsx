@@ -4,6 +4,8 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
 import DocumentEditor from "./components/DocumentEditor";
 import ChatRow from "./components/ChatRow";
+import ModePicker from "./components/ModePicker";
+import { getMode, nextMode, setMode } from "./lib/mode";
 import ImageThumb from "./components/ImageThumb";
 import LibraryPage from "./components/LibraryPage";
 import Orb from "./components/Orb";
@@ -979,7 +981,20 @@ export default function App() {
                   <path d="M16.5 6.5v9.8a4.5 4.5 0 0 1-9 0V5.8a3 3 0 0 1 6 0v9.7a1.5 1.5 0 0 1-3 0V6.5H9v9a3 3 0 0 0 6 0V5.8a4.5 4.5 0 0 0-9 0v10.5a6 6 0 0 0 12 0V6.5z" />
                 </svg>
               </button>
-              <input id="typed" className="typebox" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Type instead of speaking…" />
+              <ModePicker />
+              <input
+                id="typed"
+                className="typebox"
+                value={typed}
+                onChange={(e) => setTyped(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Tab" && e.shiftKey) {
+                    e.preventDefault();
+                    setMode(nextMode(getMode()));
+                  }
+                }}
+                placeholder="Type instead of speaking…"
+              />
               {j.connection !== "off" && (
                 <button type="button" className="mini" onClick={j.disconnect}>
                   End session

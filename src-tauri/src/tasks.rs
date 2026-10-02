@@ -2030,6 +2030,8 @@ fn code_prompt(request: &str, screen: &str, project: &Path, dir: &Path, build: b
              The folder may be empty or hold a brief (a markdown file); read every file in it first.\n\
              The user asked: \"{request}\"\n{screen}\n\
              How to work:\n\
+             - If a design skill is listed under \"Know-how to follow\" below, read its SKILL.md and its references/ files FIRST \
+               and follow it; where it is more specific than these notes, it wins. Start from its CSS and HTML starters.\n\
              - Build the whole thing, not a sketch. Use the real content from the brief (names, text, contact details, colours, \
                sections). Where it gives none, write believable sample content and say so in your report.\n\
              - Unless the user asked for a framework, make a static site: index.html plus css/ and js/ folders and an assets/ \
@@ -2090,6 +2092,7 @@ pub fn start_code_task(
     screen: Option<String>,
     chat_id: Option<String>,
     build: Option<bool>,
+    know_how: Option<Vec<String>>,
 ) -> Result<Task, String> {
     let s = settings::load(&app);
     let codex = find_codex(&app, &s).ok_or("Codex CLI was not found. Open Settings to install it.")?;
@@ -2103,8 +2106,10 @@ pub fn start_code_task(
     if !screen.trim().is_empty() {
         let _ = std::fs::write(dir.join("screen.txt"), &screen);
     }
+    // Skills the worker should follow (the design skill for a website), copied next to its notes.
+    let know = crate::routines::copy_know_how(&app, &know_how.unwrap_or_default(), &dir);
     let mut args = code_args(&s, &dir, &project);
-    args.push(code_prompt(&request, &screen, &project, &dir, build.unwrap_or(false)));
+    args.push(format!("{}{}", code_prompt(&request, &screen, &project, &dir, build.unwrap_or(false)), crate::routines::know_how_rule(&know)));
     save_index(&app);
     let _ = app.emit("task-update", &task);
     tauri::async_runtime::spawn(run_codex(app.clone(), task.id, args, dir, codex));

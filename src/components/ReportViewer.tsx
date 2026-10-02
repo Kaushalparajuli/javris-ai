@@ -9,6 +9,7 @@ import { printableHtml } from "../lib/exportPdf";
 import { askSavePath, fileNameOf } from "../lib/saveAs";
 import type { Task } from "../lib/types";
 import BrowserView from "./BrowserView";
+import SitePreview from "./SitePreview";
 import ImageThumb from "./ImageThumb";
 import { hydrateImages } from "../lib/docImages";
 import PanelControls from "./PanelControls";
@@ -135,6 +136,7 @@ export default function ReportViewer({
       )}
 
       {task.kind === "browser" && <BrowserView canUse={!browserBusy} />}
+      {task.kind === "code" && task.project && task.project.includes("/projects/") && <SitePreview folder={task.project} running={running} />}
 
       {task.kind === "image" ? (
         <div className="gallery">
