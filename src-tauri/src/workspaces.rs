@@ -154,6 +154,23 @@ pub fn project_remove_file(app: AppHandle, slug: String, name: String) -> Result
     Ok(list_files(&app, &slug))
 }
 
+/// Copy a document Jarvis wrote or opened into the project as `brief.md`, so the code worker can
+/// build from it. A taken name gets a number. Returns the file's name.
+#[tauri::command]
+pub fn project_import_document(app: AppHandle, slug: String, task_id: u32) -> Result<String, String> {
+    let dir = files_dir(&app, &slug)?;
+    let task = crate::tasks::get_task(&app, task_id).ok_or("There's no such document.")?;
+    let from = PathBuf::from(&task.dir).join(crate::tasks::DOCUMENT_FILE);
+    let mut name = "brief.md".to_string();
+    let mut n = 2;
+    while dir.join(&name).exists() {
+        name = format!("brief {n}.md");
+        n += 1;
+    }
+    std::fs::copy(&from, dir.join(&name)).map_err(|_| "That document has no content yet.".to_string())?;
+    Ok(name)
+}
+
 /// A project file's text, for Jarvis to read. Binary files and huge ones are refused.
 #[tauri::command]
 pub fn project_read_file(app: AppHandle, slug: String, name: String) -> Result<String, String> {

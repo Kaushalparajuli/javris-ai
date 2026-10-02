@@ -127,7 +127,10 @@ export default function ProjectPage({
                   ))}
                 </ul>
               )}
-              <p className="muted small" title={project.folder}>Folder: {project.folder.replace(/^\/Users\/[^/]+/, "~")}</p>
+              <p className="muted small" title={project.folder}>
+                Folder: {project.folder.replace(/^\/Users\/[^/]+/, "~")}{" "}
+                <button className="mini" onClick={() => revealItemInDir(`${project.folder}/${files[0]?.name ?? ""}`.replace(/\/$/, "")).catch(() => {})}>Show in Finder</button>
+              </p>
             </section>
           </div>
           <section className="pp-card pp-chats">

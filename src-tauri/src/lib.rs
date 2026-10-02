@@ -173,6 +173,7 @@ pub fn run() {
             workspaces::project_files,
             workspaces::project_add_files,
             workspaces::project_remove_file,
+            workspaces::project_import_document,
             workspaces::project_read_file,
             workspaces::delete_workspace,
             workspaces::set_active_workspace,
