@@ -22,7 +22,12 @@ mod routines;
 mod sitekit;
 mod search;
 mod settings;
+mod sysaudio;
+mod slides;
+mod telegram;
+mod sources;
 mod tasks;
+mod transcribe;
 mod verify;
 mod videokit;
 mod voices;
@@ -112,6 +117,8 @@ pub fn run() {
             tauri::async_runtime::spawn(briefings::run_scheduler(app.handle().clone()));
             tauri::async_runtime::spawn(routines::run_scheduler(app.handle().clone()));
             tauri::async_runtime::spawn(browser::run_reaper(app.handle().clone()));
+            // Listens for the owner's Telegram messages when a bot is paired and switched on.
+            telegram::restart(app.handle());
             if settings::load(app.handle()).wake_word {
                 if let Err(e) = wakeword::start(app.handle()) {
                     eprintln!("Couldn't start listening for \"hey Jarvis\": {e}");
@@ -265,6 +272,12 @@ pub fn run() {
             youtube::yt_playlist_items,
             youtube::yt_mine,
             websearch::web_search,
+            sources::sec_company,
+            sources::sec_filings,
+            sources::sec_search,
+            sources::sec_read,
+            sources::paper_search,
+            sources::youtube_ask,
             briefings::save_briefing,
             briefings::delete_briefing,
             briefings::run_briefing_now,
@@ -337,6 +350,16 @@ pub fn run() {
             meeting::meeting_begin,
             meeting::meeting_append,
             meeting::meeting_finish,
+            transcribe::meeting_audio_append,
+            transcribe::meeting_audio_finish,
+            transcribe::transcribe_meeting,
+            sysaudio::system_audio_start,
+            sysaudio::system_audio_stop,
+            sysaudio::vp_start,
+            sysaudio::vp_play,
+            sysaudio::vp_flush,
+            sysaudio::vp_stop,
+            sysaudio::audio_route,
             mini::mini_show,
             mini::mini_hide,
             mini::mini_resize,
@@ -345,6 +368,20 @@ pub fn run() {
             policy::notify_approval,
             tasks::start_code_task,
             tasks::resolve_project,
+            slides::start_slides,
+            slides::slides_edit,
+            slides::slides_info,
+            slides::slides_open,
+            slides::slides_upload,
+            telegram::telegram_pair_start,
+            telegram::telegram_pair_cancel,
+            telegram::telegram_restart,
+            telegram::telegram_status,
+            telegram::telegram_send,
+            telegram::telegram_typing,
+            telegram::telegram_send_file,
+            telegram::telegram_ask,
+            telegram::telegram_ask_close,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Jarvis")

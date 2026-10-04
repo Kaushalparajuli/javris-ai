@@ -187,6 +187,7 @@ export default function BriefingsPage({
               <span>{b.enabled ? (b.nextRun ? `Next: ${when(b.nextRun)}` : "Not scheduled") : "Paused"}</span>
               {b.lastRun && <span>Last: {when(b.lastRun)}</span>}
             </div>
+            {b.lastError && <p className="error-text small">Last run couldn't start: {b.lastError}</p>}
             <div className="actions">
               {b.lastTask != null && (
                 <button className="mini" onClick={() => onOpenTask(b.lastTask!)}>

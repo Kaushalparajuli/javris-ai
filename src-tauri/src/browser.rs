@@ -92,6 +92,31 @@ fn configured_servers() -> Vec<String> {
     names
 }
 
+/// The browser tools the worker may use: going to pages, reading them, clicking, typing, choosing,
+/// waiting, screenshots, tabs and closing. Left out are the ones that run code (browser_evaluate,
+/// browser_run_code_unsafe), touch files (browser_file_upload, browser_drop, PDFs), read cookies,
+/// storage or network traffic, or change the browser itself. The browser is signed in as the user
+/// and approves tool calls by itself, so a web page that talks the worker into something can only
+/// do what a person clicking around could.
+const BROWSER_TOOLS: [&str; 16] = [
+    "browser_navigate",
+    "browser_navigate_back",
+    "browser_snapshot",
+    "browser_find",
+    "browser_click",
+    "browser_hover",
+    "browser_drag",
+    "browser_type",
+    "browser_fill_form",
+    "browser_select_option",
+    "browser_press_key",
+    "browser_handle_dialog",
+    "browser_wait_for",
+    "browser_take_screenshot",
+    "browser_tabs",
+    "browser_close",
+];
+
 /// The Codex overrides that connect a run to Jarvis's browser, saving screenshots into `dir`.
 fn mcp_args(app: &AppHandle, dir: &Path, port: u16) -> Result<Vec<String>, String> {
     let cli = cli_path(app);
@@ -99,6 +124,10 @@ fn mcp_args(app: &AppHandle, dir: &Path, port: u16) -> Result<Vec<String>, Strin
         return Err("The browser tools aren't set up yet.".into());
     }
     let node = node_path(app).ok_or("Couldn't find Node.js, which the browser tools need.")?;
+    Ok(browser_server_args(&cli, &node, dir, port, &configured_servers()))
+}
+
+fn browser_server_args(cli: &Path, node: &Path, dir: &Path, port: u16, others: &[String]) -> Vec<String> {
     let server = [
         cli.display().to_string(),
         "--cdp-endpoint".into(),
@@ -107,10 +136,11 @@ fn mcp_args(app: &AppHandle, dir: &Path, port: u16) -> Result<Vec<String>, Strin
         dir.display().to_string(),
     ];
     let mut args = vec![];
-    for name in configured_servers() {
+    for name in others {
         args.extend(["-c".into(), format!("mcp_servers.{name}.enabled=false")]);
     }
     let list = server.iter().map(|a| toml_string(a)).collect::<Vec<_>>().join(",");
+    let tools = BROWSER_TOOLS.iter().map(|t| toml_string(t)).collect::<Vec<_>>().join(",");
     args.extend([
         "-c".into(),
         format!("mcp_servers.browser.command={}", toml_string(&node.display().to_string())),
@@ -122,8 +152,11 @@ fn mcp_args(app: &AppHandle, dir: &Path, port: u16) -> Result<Vec<String>, Strin
         // anything irreversible instead.
         "-c".into(),
         "mcp_servers.browser.default_tools_approval_mode=\"approve\"".into(),
+        // ...and only for the tools in BROWSER_TOOLS; Codex never offers the worker the rest.
+        "-c".into(),
+        format!("mcp_servers.browser.enabled_tools=[{tools}]"),
     ]);
-    Ok(args)
+    args
 }
 
 // ---------- prompts and progress ----------
@@ -230,6 +263,9 @@ struct Session {
 pub struct BrowserState {
     session: Mutex<Option<Session>>,
     frame: Arc<Mutex<Option<Frame>>>,
+    /// Held while the browser is being started, so two tasks starting together share one browser
+    /// instead of launching two on the same profile.
+    starting: tokio::sync::Mutex<()>,
 }
 
 fn touch(app: &AppHandle) {
@@ -245,6 +281,7 @@ fn busy(app: &AppHandle) -> bool {
 /// Start Jarvis's browser, or reuse it if it's running. Returns its DevTools port.
 async fn ensure_session(app: &AppHandle) -> Result<u16, String> {
     let state = app.state::<BrowserState>();
+    let _starting = state.starting.lock().await;
     {
         let mut guard = state.session.lock().unwrap();
         if let Some(s) = guard.as_mut() {
@@ -748,6 +785,24 @@ mod tests {
         assert_eq!(toml_string("/Users/me/node"), "'/Users/me/node'");
         assert_eq!(toml_string(r"C:\Program Files\nodejs\node.exe"), r"'C:\Program Files\nodejs\node.exe'");
         assert_eq!(toml_string("/Users/o'neil/node"), "\"/Users/o'neil/node\"");
+    }
+
+    #[test]
+    fn the_worker_gets_only_the_safe_browser_tools() {
+        let args = browser_server_args(Path::new("/t/cli.js"), Path::new("/n/node"), Path::new("/task"), 9222, &["github".into()]);
+        let value = |key: &str| args.iter().find_map(|a| a.strip_prefix(key)).map(str::to_string);
+        assert_eq!(value("mcp_servers.github.enabled=").as_deref(), Some("false"));
+        assert_eq!(value("mcp_servers.browser.command=").as_deref(), Some("'/n/node'"));
+        assert!(value("mcp_servers.browser.args=").unwrap().contains("'http://127.0.0.1:9222'"));
+        let enabled = value("mcp_servers.browser.enabled_tools=").expect("no allowlist");
+        for t in ["browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_take_screenshot", "browser_tabs"] {
+            assert!(enabled.contains(&format!("'{t}'")), "{t} should be allowed");
+        }
+        for t in ["browser_evaluate", "browser_run_code", "browser_file_upload", "browser_drop", "browser_install", "browser_network_request", "browser_cookie_get"] {
+            assert!(!enabled.contains(&format!("'{t}")), "{t} must not be allowed");
+        }
+        // Every override is followed by -c, so Codex reads each one.
+        assert!(args.chunks(2).all(|p| p[0] == "-c"));
     }
 
     #[test]

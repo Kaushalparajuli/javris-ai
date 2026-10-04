@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
 import type { Workspace } from "../lib/types";
 
@@ -61,7 +62,15 @@ export default function NewProjectPage({ project, onSaved, onClose }: { project?
               <button
                 type="button"
                 className="mini danger"
-                onClick={() => invoke("delete_workspace", { slug: project.slug }).then(() => onSaved(project)).catch((e) => setError(String(e)))}
+                onClick={async () => {
+                  const ok = await confirm(`Delete the project “${project.name}”?\n\nIts chats move out of the project and its files folder stays on disk.`, {
+                    title: "Delete project",
+                    kind: "warning",
+                    okLabel: "Delete project",
+                  });
+                  if (!ok) return;
+                  invoke("delete_workspace", { slug: project.slug }).then(() => onSaved(project)).catch((e) => setError(String(e)));
+                }}
               >
                 Delete project
               </button>

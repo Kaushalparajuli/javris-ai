@@ -34,6 +34,8 @@ pub struct Briefing {
     pub last_task: Option<u32>,
     /// When it runs next (ms since the epoch). Worked out here, never trusted from the UI.
     pub next_run: Option<u64>,
+    /// Why the last scheduled run couldn't start (say Codex wasn't found); empty once one starts.
+    pub last_error: String,
 }
 
 /// One writer at a time for briefings.json (the scheduler and the UI both save it).
@@ -132,6 +134,7 @@ pub fn save_briefing(app: AppHandle, briefing: Briefing) -> Result<Briefing, Str
         b.created_at = old.created_at;
         b.last_run = old.last_run;
         b.last_task = old.last_task;
+        b.last_error = old.last_error.clone();
     } else {
         b.id = format!("b{}", now_ms());
         b.created_at = now_ms();
@@ -183,6 +186,7 @@ pub fn run_briefing_now(app: AppHandle, id: String) -> Result<Task, String> {
     let task = start(&app, b)?;
     b.last_run = Some(now_ms());
     b.last_task = Some(task.id);
+    b.last_error.clear();
     store(&app, &list)?;
     Ok(task)
 }
@@ -208,8 +212,13 @@ fn tick(app: &AppHandle) {
                 Ok(task) => {
                     b.last_run = Some(now_ms());
                     b.last_task = Some(task.id);
+                    b.last_error.clear();
                 }
-                Err(e) => eprintln!("Briefing {:?} couldn't start: {e}", b.title),
+                // Kept on the briefing so the Briefings page can say so (saving tells it to reload).
+                Err(e) => {
+                    eprintln!("Briefing {:?} couldn't start: {e}", b.title);
+                    b.last_error = e;
+                }
             }
             // Missed runs collapse into this one: the next run is worked out from now.
             schedule(b, now);

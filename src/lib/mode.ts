@@ -66,4 +66,5 @@ export const CHANGING_TOOLS = new Set([
   "schedule_briefing", "cancel_briefing", "create_routine", "update_routine", "run_routine", "remember_how",
   "start_meeting", "mac_open", "mac_click", "mac_type", "mac_key", "mac_scroll",
   "fix_in_project", "build_project", "replace_selection",
+  "make_video", "approve_storyboard", "edit_video", "render_video", "review_site", "remember",
 ]);

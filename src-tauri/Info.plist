@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Jarvis listens to your voice so you can talk to it.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Jarvis records the other people on your calls when you start a meeting.</string>
 </dict>
 </plist>

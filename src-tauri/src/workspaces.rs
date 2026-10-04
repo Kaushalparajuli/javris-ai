@@ -47,8 +47,13 @@ fn file(app: &AppHandle, slug: &str) -> PathBuf {
     root(app).join(slug).join("workspace.json")
 }
 
+/// A slug that names one folder directly under projects/: no separators, no `..`.
+fn safe_slug(slug: &str) -> bool {
+    !slug.is_empty() && !slug.contains('/') && !slug.contains('\\') && !slug.contains("..")
+}
+
 pub fn load(app: &AppHandle, slug: &str) -> Option<Workspace> {
-    if slug.is_empty() || slug.contains('/') || slug.contains("..") {
+    if !safe_slug(slug) {
         return None;
     }
     serde_json::from_str(&std::fs::read_to_string(file(app, slug)).ok()?).ok()
@@ -143,16 +148,38 @@ pub fn project_add_files(app: AppHandle, slug: String, paths: Vec<String>) -> Re
     Ok(list_files(&app, &slug))
 }
 
+/// Move a project file to the Trash, so a removal can be undone from Finder. Folders are left alone.
 #[tauri::command]
 pub fn project_remove_file(app: AppHandle, slug: String, name: String) -> Result<Vec<ProjectFile>, String> {
     let dir = files_dir(&app, &slug)?;
     let name = safe_name(&name).ok_or("That file name can't be used.")?;
-    match std::fs::remove_file(dir.join(name)) {
-        Ok(()) => {}
+    let path = dir.join(name);
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_dir() => return Err(format!("{name} is a folder; only files can be removed here.")),
+        Ok(_) => {
+            move_to_trash(&path)?;
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.to_string()),
     }
     Ok(list_files(&app, &slug))
+}
+
+/// Put a file in the user's Trash (the same as Finder's Move to Trash). Returns where it went.
+#[cfg(target_os = "macos")]
+fn move_to_trash(path: &Path) -> Result<Option<PathBuf>, String> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    let mut landed = None;
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, Some(&mut landed))
+        .map_err(|e| format!("Couldn't move it to the Trash: {}", e.localizedDescription()))?;
+    Ok(landed.and_then(|u| u.path()).map(|p| PathBuf::from(p.to_string())))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn move_to_trash(_path: &Path) -> Result<Option<PathBuf>, String> {
+    Err("Moving files to the Trash only works on a Mac.".into())
 }
 
 /// The websites in a project: folders that hold a web page. (A site built straight into the project
@@ -267,6 +294,10 @@ pub fn save_workspace(app: AppHandle, mut workspace: Workspace) -> Result<Worksp
     if workspace.slug.is_empty() {
         return Err("Use letters or numbers in the name.".into());
     }
+    // The slug comes from the UI and names a folder, so it must stay inside projects/.
+    if !safe_slug(&workspace.slug) {
+        return Err("That project's folder name can't be used.".into());
+    }
     workspace.folder = workspace.folder.trim().to_string();
     if !workspace.folder.is_empty() {
         // A project folder must be a real, narrow one, the same rule code tasks use.
@@ -338,7 +369,34 @@ pub fn set_active_workspace(app: AppHandle, slug: String) -> Result<Option<Works
 
 #[cfg(test)]
 mod tests {
-    use super::{free_site_name, safe_name, sites_in, slug};
+    use super::{free_site_name, safe_name, safe_slug, sites_in, slug};
+
+    #[test]
+    fn project_slugs_cannot_escape_the_projects_folder() {
+        assert!(safe_slug("fikra-ventures"));
+        assert!(!safe_slug(""));
+        assert!(!safe_slug(".."));
+        assert!(!safe_slug("../outside"));
+        assert!(!safe_slug("a/b"));
+        assert!(!safe_slug(r"a\b"));
+        assert!(!safe_slug("x..y"));
+    }
+
+    /// Needs a Mac with a Trash: `cargo test -- --ignored removed_files_go_to_the_trash`
+    #[test]
+    #[ignore]
+    fn removed_files_go_to_the_trash() {
+        let tmp = std::env::temp_dir().join(format!("jarvis-trash-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let f = tmp.join("old notes.txt");
+        std::fs::write(&f, "x").unwrap();
+        let landed = super::move_to_trash(&f).unwrap().expect("no place in the Trash");
+        assert!(!f.exists());
+        assert!(landed.is_file(), "not in the Trash: {}", landed.display());
+        // Only this test's own file, so the Trash is left as it was.
+        let _ = std::fs::remove_file(&landed);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn names_become_folder_names() {

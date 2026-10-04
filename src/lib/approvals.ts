@@ -107,6 +107,7 @@ export function requestApproval(
     return Promise.resolve({ ok: true, decision: "auto" });
   }
   return new Promise((done) => {
+    let closeRemote: ((ok: boolean) => void) | void;
     const item: Pending = {
       id: ++seq,
       risk: req.risk,
@@ -114,16 +115,31 @@ export function requestApproval(
       detail: req.detail,
       okLabel: req.okLabel ?? "Approve",
       resolve: (ok) => {
+        // The first answer wins, on screen or remote; later ones are ignored.
+        if (!queue.some((p) => p.id === item.id)) return;
         queue = queue.filter((p) => p.id !== item.id);
         changed();
+        closeRemote?.(ok);
         log(ok ? "approved" : "declined");
         done({ ok, decision: ok ? "approved" : "declined" });
       },
     };
     queue = [...queue, item];
     changed();
+    closeRemote = remoteApprover?.(item, (ok) => item.resolve(ok));
     invoke("notify_approval", { title: "Jarvis needs your OK", body: req.title }).catch(() => {});
   });
+}
+
+/**
+ * Somewhere else the owner can answer an approval with a click (their phone, through Telegram).
+ * It gets each approval that waits for a click and a way to answer it, and may return a function
+ * that is called once the approval is answered either way. The card on screen still works.
+ */
+export type RemoteApprover = (approval: Approval, answer: (ok: boolean) => void) => ((ok: boolean) => void) | void;
+let remoteApprover: RemoteApprover | null = null;
+export function setRemoteApprover(fn: RemoteApprover | null) {
+  remoteApprover = fn;
 }
 
 /** The approvals waiting for a click, oldest first. */

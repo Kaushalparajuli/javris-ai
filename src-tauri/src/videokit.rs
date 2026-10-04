@@ -454,7 +454,41 @@ fn parse_progress(line: &str) -> Option<(u8, String)> {
     Some((pct, line[at + 1..].trim().to_string()))
 }
 
-static CURRENT_PID: Mutex<Option<u32>> = Mutex::new(None);
+/// HyperFrames processes that are running, each with the project folder it works in, so stopping
+/// one video never stops another's.
+static RUNNING: Mutex<Vec<(PathBuf, u32)>> = Mutex::new(Vec::new());
+
+/// A process's place in `RUNNING`, given up when the run ends however it ends.
+struct Tracked(Option<u32>);
+
+impl Tracked {
+    fn new(dir: &Path, pid: Option<u32>) -> Tracked {
+        if let Some(pid) = pid {
+            RUNNING.lock().unwrap_or_else(|e| e.into_inner()).push((dir.to_path_buf(), pid));
+        }
+        Tracked(pid)
+    }
+}
+
+impl Drop for Tracked {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            RUNNING.lock().unwrap_or_else(|e| e.into_inner()).retain(|(_, p)| *p != pid);
+        }
+    }
+}
+
+/// The running processes for the project in `dir`, or every one with no folder.
+fn running_in(dir: Option<&Path>) -> Vec<u32> {
+    let want = dir.map(|d| d.canonicalize().unwrap_or_else(|_| d.to_path_buf()));
+    RUNNING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|(d, _)| want.as_ref().map_or(true, |w| d.canonicalize().unwrap_or_else(|_| d.clone()) == *w))
+        .map(|(_, pid)| *pid)
+        .collect()
+}
 
 /// Run one HyperFrames command in `dir` with the private toolbox. Calls `on_line` for each line of
 /// output (colours removed) and returns whether it succeeded plus the output.
@@ -475,7 +509,7 @@ async fn run_hf(rt: &Runtime, dir: &Path, args: &[&str], mut on_line: impl FnMut
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| format!("Couldn't start HyperFrames: {e}"))?;
-    *CURRENT_PID.lock().unwrap() = child.id();
+    let _tracked = Tracked::new(dir, child.id());
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     for pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn tokio::io::AsyncRead + Unpin + Send>), child.stderr.take().map(|p| Box::new(p) as _)].into_iter().flatten() {
         let tx = tx.clone();
@@ -498,7 +532,6 @@ async fn run_hf(rt: &Runtime, dir: &Path, args: &[&str], mut on_line: impl FnMut
         }
     }
     let status = child.wait().await.map_err(|e| e.to_string())?;
-    *CURRENT_PID.lock().unwrap() = None;
     Ok((status.success(), text))
 }
 
@@ -673,7 +706,16 @@ pub(crate) async fn check_project_public(rt: &Runtime, dir: &Path) -> Result<Che
     check_project(rt, dir).await
 }
 
-pub(crate) async fn render_public(rt: &Runtime, dir: &Path, quality: &str, progress: impl FnMut(u8, String)) -> Result<RenderDone, String> {
+/// Render for the pipeline. Shares the one-render-at-a-time rule with `video_render`, but waits its
+/// turn instead of giving up, since a video being made shouldn't fail because another is rendering.
+pub(crate) async fn render_public(rt: &Runtime, dir: &Path, quality: &str, mut progress: impl FnMut(u8, String)) -> Result<RenderDone, String> {
+    let _turn = match RENDER_TURN.try_lock() {
+        Ok(turn) => turn,
+        Err(_) => {
+            progress(0, "Waiting for another video to finish rendering…".into());
+            RENDER_TURN.lock().await
+        }
+    };
     render_project(rt, dir, quality, progress).await
 }
 
@@ -871,24 +913,23 @@ pub struct RenderDone {
     pub seconds_taken: u64,
 }
 
-static RENDERING: AtomicBool = AtomicBool::new(false);
+/// One render at a time, from the Video tab or the pipeline: each render runs a browser per core.
+static RENDER_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Render the video. `quality` is "draft" (quick look) or "final". Progress goes out as `video-render`.
 #[tauri::command]
 pub async fn video_render(app: AppHandle, folder: String, quality: Option<String>) -> Result<RenderDone, String> {
     let rt = Runtime::for_app(&app);
     let (dir, _) = preview::project_dir(&app, &folder)?;
-    if RENDERING.swap(true, Ordering::SeqCst) {
+    let Ok(_turn) = RENDER_TURN.try_lock() else {
         return Err("Another video is being made right now. Wait for it to finish.".into());
-    }
+    };
     let handle = app.clone();
     let key = folder.clone();
-    let result = render_project(&rt, &dir, quality.as_deref().unwrap_or("draft"), move |percent, message| {
+    render_project(&rt, &dir, quality.as_deref().unwrap_or("draft"), move |percent, message| {
         let _ = handle.emit("video-render", RenderEvent { folder: key.clone(), percent, message });
     })
-    .await;
-    RENDERING.store(false, Ordering::SeqCst);
-    result
+    .await
 }
 
 async fn render_project(rt: &Runtime, dir: &Path, quality: &str, mut progress: impl FnMut(u8, String)) -> Result<RenderDone, String> {
@@ -911,10 +952,11 @@ async fn render_project(rt: &Runtime, dir: &Path, quality: &str, mut progress: i
     Ok(RenderDone { path: out, name: name.into(), size: file.metadata().map(|m| m.len()).unwrap_or(0), seconds_taken: started.elapsed().as_secs() })
 }
 
-/// Stop the render or check that is running.
+/// Stop the render or check running for the video in `folder`; with no folder, every one.
 #[tauri::command]
-pub fn video_cancel() {
-    if let Some(pid) = *CURRENT_PID.lock().unwrap() {
+pub fn video_cancel(folder: Option<String>) {
+    let dir = folder.filter(|f| !f.is_empty()).map(PathBuf::from);
+    for pid in running_in(dir.as_deref()) {
         let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
     }
 }
@@ -922,6 +964,24 @@ pub fn video_cancel() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopping_one_video_only_finds_its_own_processes() {
+        let base = std::env::temp_dir().join(format!("jarvis-video-stop-{}", std::process::id()));
+        let (a, b) = (base.join("a"), base.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        // Made-up ids: nothing is killed here, only looked up.
+        let in_a = Tracked::new(&a, Some(4_000_001));
+        let in_b = Tracked::new(&b, Some(4_000_002));
+        assert_eq!(running_in(Some(&a)), vec![4_000_001]);
+        assert_eq!(running_in(Some(&base.join("b/../b"))), vec![4_000_002], "the same folder written another way");
+        assert!(running_in(None).contains(&4_000_001) && running_in(None).contains(&4_000_002));
+        drop(in_a);
+        assert!(running_in(Some(&a)).is_empty(), "a finished run is forgotten");
+        drop(in_b);
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn node_downloads_are_picked_from_the_published_list() {

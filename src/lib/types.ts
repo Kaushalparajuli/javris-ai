@@ -26,7 +26,7 @@ export interface Task {
   finishedAt: number | null;
   searches: number;
   sources: number;
-  kind: "research" | "image" | "document" | "browser" | "skill" | "code";
+  kind: "research" | "image" | "document" | "browser" | "skill" | "code" | "slides";
   images: string[];
   refs: string[];
   /** For a step of a routine: the run it belongs to. */
@@ -62,6 +62,16 @@ export interface Settings {
   narrationGeminiVoice: string;
   elevenlabsVoice: string;
   elevenlabsModel: string;
+  /** The owner's Telegram bot token (from @BotFather). */
+  telegramToken: string;
+  /** The one Telegram chat Jarvis listens to; 0 when not paired. */
+  telegramChatId: number;
+  /** Listen for Telegram messages. */
+  telegramEnabled: boolean;
+  /** Apple's echo cancellation on the microphone, so Jarvis can be interrupted on speakers (beta). */
+  echoCancellation: boolean;
+  /** Meetings also record what the Mac plays: the other side of a call. */
+  meetingSystemAudio: boolean;
 }
 
 export interface CodexStatus {
@@ -153,6 +163,8 @@ export interface Briefing {
   lastRun: number | null;
   lastTask: number | null;
   nextRun: number | null;
+  /** Why the last scheduled run couldn't start; empty when it did. */
+  lastError?: string;
 }
 
 export type StepKind = "research" | "write" | "inbox" | "calendar" | "email_me";

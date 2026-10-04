@@ -44,6 +44,15 @@ fn tail(s: &str) -> String {
     format!("…{}", s.chars().skip(skip).collect::<String>())
 }
 
+/// Everything a pipe gives until it closes (nothing if there's no pipe).
+async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> String {
+    let mut bytes = vec![];
+    if let Some(mut p) = pipe {
+        let _ = p.read_to_end(&mut bytes).await;
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 /// Run one command through the user's login shell (so node, cargo and friends are on the PATH).
 async fn run_one(cmd: &str, dir: &Path) -> (bool, String) {
     let child = Command::new("/bin/zsh")
@@ -58,16 +67,12 @@ async fn run_one(cmd: &str, dir: &Path) -> (bool, String) {
         Ok(c) => c,
         Err(e) => return (false, format!("Couldn't start: {e}")),
     };
-    let mut out = child.stdout.take();
-    let mut err = child.stderr.take();
+    let out = child.stdout.take();
+    let err = child.stderr.take();
     let read = async {
-        let (mut a, mut b) = (String::new(), String::new());
-        if let Some(o) = out.as_mut() {
-            let _ = o.read_to_string(&mut a).await;
-        }
-        if let Some(e) = err.as_mut() {
-            let _ = e.read_to_string(&mut b).await;
-        }
+        // Both pipes at once: a command that fills one while the other is being read would
+        // otherwise wait forever for room to write.
+        let (a, b) = tokio::join!(read_all(out), read_all(err));
         let status = child.wait().await;
         (status, format!("{a}\n{b}"))
     };
@@ -128,6 +133,18 @@ mod tests {
         let (ok, out) = run_one("echo broken >&2; exit 3", &dir).await;
         assert!(!ok);
         assert!(out.contains("broken"));
+    }
+
+    #[tokio::test]
+    async fn lots_of_error_output_does_not_stall_a_check() {
+        let dir = std::env::temp_dir();
+        let started = std::time::Instant::now();
+        // About 200 KB on stderr, far more than a pipe holds, then a line on stdout.
+        let (ok, out) = run_one("head -c 200000 /dev/zero | tr '\\0' e >&2; echo done", &dir).await;
+        assert!(ok);
+        assert!(started.elapsed() < Duration::from_secs(20), "took {:?}", started.elapsed());
+        assert!(out.ends_with('e'), "the end of the error output is kept");
+        assert!(out.chars().count() <= KEEP + 1);
     }
 
     #[test]

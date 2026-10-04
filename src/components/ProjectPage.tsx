@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { confirm, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useEffect, useState } from "react";
 import { day } from "../lib/format";
@@ -63,10 +63,17 @@ export default function ProjectPage({
     }
     setBusy(false);
   };
-  const removeFile = (name: string) =>
+  const removeFile = async (name: string) => {
+    const ok = await confirm(`Move “${name}” to the Trash?\n\nIt's removed from this project. You can get it back from the Trash.`, {
+      title: "Remove file",
+      kind: "warning",
+      okLabel: "Move to Trash",
+    });
+    if (!ok) return;
     invoke<ProjectFile[]>("project_remove_file", { slug: project.slug, name })
       .then(setFiles)
       .catch((e) => setError(String(e)));
+  };
 
   const mine = chats.filter((c) => c.workspace === project.slug && (!q.trim() || (c.title || "New chat").toLowerCase().includes(q.trim().toLowerCase())));
 

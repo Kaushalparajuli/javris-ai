@@ -11,9 +11,12 @@ use crate::settings;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
 use tauri::AppHandle;
 
 const MAX_FILES_PER_FOLDER: usize = 4000;
@@ -61,7 +64,38 @@ pub struct IndexStatus {
     pub scanning: bool,
 }
 
-static SCANNING: AtomicBool = AtomicBool::new(false);
+/// Whether a scan is running, and whether another was asked for while it ran (say a folder was
+/// added), in which case the scan goes round once more when it's done.
+struct Scan {
+    running: bool,
+    again: bool,
+}
+
+static SCAN: Mutex<Scan> = Mutex::new(Scan { running: false, again: false });
+
+/// Claim the scanner. If it's busy, ask it to go round again instead and return false.
+fn begin_scan(scan: &Mutex<Scan>) -> bool {
+    let mut s = scan.lock().unwrap_or_else(|e| e.into_inner());
+    if s.running {
+        s.again = true;
+        return false;
+    }
+    *s = Scan { running: true, again: false };
+    true
+}
+
+/// A pass is done: true if someone asked for another one meanwhile, otherwise the scanner is free.
+fn scan_again(scan: &Mutex<Scan>) -> bool {
+    let mut s = scan.lock().unwrap_or_else(|e| e.into_inner());
+    if std::mem::take(&mut s.again) {
+        return true;
+    }
+    s.running = false;
+    false
+}
+
+/// Longest a converter may take over one file before it's stopped and the file skipped.
+const EXTRACT_LIMIT: Duration = Duration::from_secs(20);
 static EMBEDDING: AtomicBool = AtomicBool::new(false);
 
 fn open(path: &Path) -> Result<Connection, String> {
@@ -168,6 +202,34 @@ fn supported(path: &Path) -> bool {
     TEXT_EXT.contains(&e.as_str()) || CONVERT_EXT.contains(&e.as_str()) || SPOTLIGHT_EXT.contains(&e.as_str())
 }
 
+/// What a converter prints, or nothing if it fails to start or takes longer than `limit` (then
+/// it's stopped, so one bad file can't hold up the whole index).
+fn text_from(cmd: &mut Command, limit: Duration) -> String {
+    let Ok(mut child) = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
+        return String::new();
+    };
+    let out = child.stdout.take();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = vec![];
+        if let Some(mut o) = out {
+            let _ = o.read_to_end(&mut bytes);
+        }
+        let _ = tx.send(bytes);
+    });
+    match rx.recv_timeout(limit) {
+        Ok(bytes) => {
+            let _ = child.wait();
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            String::new()
+        }
+    }
+}
+
 /// The text of a file, or nothing when it can't be read.
 fn extract(path: &Path) -> String {
     let e = ext_of(path);
@@ -176,28 +238,13 @@ fn extract(path: &Path) -> String {
     }
     if CONVERT_EXT.contains(&e.as_str()) {
         // macOS's own converter handles Word, RTF, OpenDocument and HTML.
-        return Command::new("/usr/bin/textutil")
-            .args(["-convert", "txt", "-stdout"])
-            .arg(path)
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default();
+        return text_from(Command::new("/usr/bin/textutil").args(["-convert", "txt", "-stdout"]).arg(path), EXTRACT_LIMIT);
     }
     if e == "pdf" {
-        return Command::new("/usr/bin/osascript")
-            .args(["-l", "JavaScript", "-e", PDF_SCRIPT])
-            .arg(path)
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default();
+        return text_from(Command::new("/usr/bin/osascript").args(["-l", "JavaScript", "-e", PDF_SCRIPT]).arg(path), EXTRACT_LIMIT);
     }
     // Decks and Pages files: the text Spotlight already extracted.
-    let text = Command::new("/usr/bin/mdls")
-        .args(["-raw", "-name", "kMDItemTextContent"])
-        .arg(path)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
+    let text = text_from(Command::new("/usr/bin/mdls").args(["-raw", "-name", "kMDItemTextContent"]).arg(path), EXTRACT_LIMIT);
     if text.trim() == "(null)" {
         String::new()
     } else {
@@ -411,7 +458,7 @@ fn fuse(keyword: Vec<Row>, meaning: Vec<Row>, limit: usize) -> Vec<FileHit> {
 // ---------- commands ----------
 
 fn status_of(app: &AppHandle) -> IndexStatus {
-    let mut s = IndexStatus { folders: load_folders(app), scanning: SCANNING.load(Ordering::SeqCst), ..Default::default() };
+    let mut s = IndexStatus { folders: load_folders(app), scanning: SCAN.lock().unwrap_or_else(|e| e.into_inner()).running, ..Default::default() };
     if let Ok(db) = db(app) {
         s.files = db.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0)).unwrap_or(0);
         s.chunks = db.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0)).unwrap_or(0);
@@ -421,20 +468,25 @@ fn status_of(app: &AppHandle) -> IndexStatus {
 }
 
 /// Re-read every chosen folder, then embed what's new. One scan at a time.
+/// A request while a scan is running (a folder added mid-scan) makes it go round once more.
 pub async fn rescan(app: AppHandle) {
-    if SCANNING.swap(true, Ordering::SeqCst) {
+    if !begin_scan(&SCAN) {
         return;
     }
-    let handle = app.clone();
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        if let Ok(db) = db(&handle) {
-            for f in load_folders(&handle) {
-                let _ = scan_folder(&db, &f);
+    loop {
+        let handle = app.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            if let Ok(db) = db(&handle) {
+                for f in load_folders(&handle) {
+                    let _ = scan_folder(&db, &f);
+                }
             }
+        })
+        .await;
+        if !scan_again(&SCAN) {
+            break;
         }
-    })
-    .await;
-    SCANNING.store(false, Ordering::SeqCst);
+    }
     embed_pending(app).await;
 }
 
@@ -504,6 +556,27 @@ pub async fn index_search(app: AppHandle, query: String, limit: Option<usize>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rescan_asked_for_mid_scan_runs_after_it() {
+        let scan = Mutex::new(Scan { running: false, again: false });
+        assert!(begin_scan(&scan), "the first scan starts");
+        assert!(!begin_scan(&scan), "a second waits for the first");
+        assert!(!begin_scan(&scan));
+        assert!(scan_again(&scan), "the first goes round once more");
+        assert!(!scan_again(&scan), "then it's done");
+        assert!(!scan.lock().unwrap().running);
+        assert!(begin_scan(&scan), "and the next scan can start");
+    }
+
+    #[test]
+    fn a_stuck_converter_is_stopped() {
+        let started = std::time::Instant::now();
+        let text = text_from(Command::new("/bin/sleep").arg("30"), Duration::from_millis(300));
+        assert_eq!(text, "");
+        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+        assert_eq!(text_from(Command::new("/bin/echo").arg("hello"), Duration::from_secs(5)).trim(), "hello");
+    }
 
     fn temp() -> Connection {
         open(Path::new(":memory:")).unwrap()

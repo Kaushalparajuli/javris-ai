@@ -3,7 +3,7 @@ import { day } from "../lib/format";
 import type { ChatSummary, Task } from "../lib/types";
 import ImageThumb from "./ImageThumb";
 
-type Kind = "all" | "research" | "document" | "image" | "browser";
+type Kind = "all" | "research" | "document" | "slides" | "image" | "browser";
 type Scope = "all" | "chat";
 
 const SCOPE_KEY = "jarvis.library.scope";
@@ -19,12 +19,14 @@ const KINDS: { id: Kind; label: string }[] = [
   { id: "all", label: "All" },
   { id: "research", label: "Reports" },
   { id: "document", label: "Docs" },
+  { id: "slides", label: "Decks" },
   { id: "browser", label: "Browser" },
   { id: "image", label: "Images" },
 ];
 
 /** What a finished task is, in one short phrase under its title. */
 function subtitle(t: Task) {
+  if (t.kind === "slides") return "slide deck";
   if (t.kind === "image") return t.images.length > 1 ? `${t.images.length} images` : "image";
   if (t.kind === "browser") return t.images.length ? `browser · ${t.images.length} screenshot${t.images.length === 1 ? "" : "s"}` : "browser";
   if (t.kind === "document") return t.sources ? `document · ${t.sources} source${t.sources === 1 ? "" : "s"}` : "document";

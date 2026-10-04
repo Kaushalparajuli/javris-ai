@@ -8,6 +8,7 @@ import { LANGUAGES } from "../lib/languages";
 import { listLiveModels } from "../lib/live";
 import VideoSettings from "./VideoSettings";
 import type { CodexModels, CodexStatus, MicDevice, Settings } from "../lib/types";
+import TelegramSettings from "./TelegramSettings";
 
 const VOICES = ["Charon", "Puck", "Kore", "Fenrir", "Aoede", "Leda", "Orus", "Zephyr"];
 
@@ -31,6 +32,7 @@ const NAV = [
   { id: "research", label: "Research", words: "codex model thinking folder web search worker", icon: "M10.5 3a7.5 7.5 0 0 1 5.9 12.1l4.3 4.3-1.4 1.4-4.3-4.3A7.5 7.5 0 1 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z" },
   { id: "google", label: "Apps", words: "google gmail calendar mail drive docs sheets youtube connect account sign in integrations", icon: "M3 5h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm1 2v.5l8 5 8-5V7zm16 2.9-8 5-8-5V17h16z" },
   { id: "browser", label: "Browser", words: "chrome playwright websites tasks profile", icon: "M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zm0 2a7 7 0 1 0 0 14 7 7 0 0 0 0-14zm-1 2h2v5h-2zm0 7h2v2h-2z" },
+  { id: "phone", label: "Phone (Telegram)", words: "telegram phone remote bot mobile iphone message", icon: "M8 2h8a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm0 2v14h8V4zm3 15h2v1h-2z" },
   { id: "screen", label: "Screen & approvals", words: "accessibility screen recording permission approve ask never audit write send", icon: "M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5zm0 2.1 6 2.2V11c0 3.9-2.5 7.6-6 8.9-3.5-1.3-6-5-6-8.9V6.3zM11 8h2v5h-2zm0 6h2v2h-2z" },
 ];
 
@@ -196,7 +198,16 @@ export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }
 
   const save = async () => {
     try {
-      await invoke("save_settings", { settings: s });
+      // Save only what was changed here, on top of the settings as they are now: switching chat or
+      // project while this window is open also writes settings, and that mustn't be undone.
+      const fresh = await invoke<Record<string, unknown>>("get_settings");
+      const before = initial as unknown as Record<string, unknown>;
+      const edited = s as unknown as Record<string, unknown>;
+      const merged = { ...fresh };
+      for (const k of Object.keys(edited)) {
+        if (JSON.stringify(edited[k]) !== JSON.stringify(before[k])) merged[k] = edited[k];
+      }
+      await invoke("save_settings", { settings: merged });
       // Starts or stops listening for "hey Jarvis", and picks up a changed microphone.
       await invoke("wake_word_set", { enabled: !!s.wakeWord });
       setSaved("Saved");
@@ -349,6 +360,16 @@ export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }
             I'm using headphones (interrupt Jarvis by talking)
           </label>
           <p className="hint">Without headphones, Jarvis stops listening while it speaks so it doesn't hear itself. Press ⌥. to cut it off.</p>
+          <label className="check">
+            <input id="echoCancellation" type="checkbox" checked={!!s.echoCancellation} onChange={(e) => set("echoCancellation", e.target.checked)} />
+            Echo cancellation (beta)
+          </label>
+          <p className="hint">Lets you interrupt Jarvis by voice when it talks through speakers. Works best with a USB or built-in mic; Bluetooth headsets may refuse it. Turn it off if your voice sounds wrong.</p>
+          <label className="check">
+            <input id="meetingSystemAudio" type="checkbox" checked={!!s.meetingSystemAudio} onChange={(e) => set("meetingSystemAudio", e.target.checked)} />
+            Meetings: record the other side of calls
+          </label>
+          <p className="hint">Meetings also record what this Mac plays, like a Zoom or Meet call, and add a speaker-labelled transcript afterwards. macOS asks once for Screen &amp; System Audio Recording. Needs macOS 14.4 or later.</p>
           </section>
           <section hidden={!show("research")}>
             {q && <div className="label">{NAV.find((n) => n.id === "research")?.label}</div>}
@@ -507,6 +528,10 @@ export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }
           <button className="mini" onClick={() => invoke("open_browser_profile").catch((e) => setBrowser((b) => (b ? { ...b, message: String(e) } : b)))} disabled={!browser?.browser}>
             Open Jarvis's browser
           </button>
+          </section>
+          <section hidden={!show("phone")}>
+            {q && <div className="label">{NAV.find((n) => n.id === "phone")?.label}</div>}
+            <TelegramSettings />
           </section>
           <section hidden={!show("screen")}>
             {q && <div className="label">{NAV.find((n) => n.id === "screen")?.label}</div>}

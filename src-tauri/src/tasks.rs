@@ -560,9 +560,21 @@ async fn wait_for_slot(app: &AppHandle, id: u32, cancel: &mut oneshot::Receiver<
     }
 }
 
+/// Point Codex's final message (`-o`) at a file of this run's own, summary-<id>.txt in `dir`, so two
+/// runs in one folder (a follow-up while another is still going) don't overwrite each other.
+fn own_summary_file(args: &mut [String], dir: &Path, id: u32) -> PathBuf {
+    let file = dir.join(format!("summary-{id}.txt"));
+    if let Some(i) = args.iter().position(|a| a == "-o") {
+        if let Some(path) = args.get_mut(i + 1) {
+            *path = file.display().to_string();
+        }
+    }
+    file
+}
+
 /// Spawn codex and follow its JSON stream until it exits. Runs in the background.
-pub(crate) async fn run_codex(app: AppHandle, id: u32, args: Vec<String>, dir: PathBuf, codex: PathBuf) {
-    let summary_file = dir.join("summary.txt");
+pub(crate) async fn run_codex(app: AppHandle, id: u32, mut args: Vec<String>, dir: PathBuf, codex: PathBuf) {
+    let summary_file = own_summary_file(&mut args, &dir, id);
     let _ = std::fs::remove_file(&summary_file);
 
     // Only so many workers run at once; the rest wait here (and can still be cancelled).
@@ -645,6 +657,10 @@ pub(crate) async fn run_codex(app: AppHandle, id: u32, args: Vec<String>, dir: P
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| last_message.trim().to_string());
+    // The folder's summary.txt is the latest run's, as before.
+    if summary_file.is_file() {
+        let _ = std::fs::rename(&summary_file, dir.join("summary.txt"));
+    }
     let ok = exit.map(|s| s.success()).unwrap_or(false);
 
     if ok && !summary.is_empty() {
@@ -700,6 +716,9 @@ pub(crate) fn finish(app: &AppHandle, id: u32, status: Status, summary: String, 
                 t.status = Status::Failed;
                 t.error = "Codex finished but didn't save an image.".into();
             }
+        }
+        if t.kind == "slides" {
+            crate::slides::settle(t);
         }
         t.clone()
     };
@@ -762,6 +781,7 @@ fn notify_finished(app: &AppHandle, task: &Task) {
         "browser" => "Browser task",
         "code" => "Code task",
         "skill" => "Know-how",
+        "slides" => "Slide deck",
         _ if task.title.starts_with("Briefing:") => "Briefing",
         _ => "Research",
     };
@@ -2213,6 +2233,18 @@ mod code_tests {
         let add = args.iter().position(|a| a == "--add-dir").unwrap();
         assert_eq!(args[add + 1], "/tmp/task");
         assert!(args.windows(2).any(|w| w[0] == "-o" && w[1] == "/tmp/task/summary.txt"));
+    }
+
+    #[test]
+    fn each_run_writes_its_own_summary() {
+        let dir = Path::new("/tmp/task");
+        let mut first = code_args(&Settings::default(), dir, Path::new("/tmp/project"));
+        let mut second = first.clone();
+        assert_eq!(own_summary_file(&mut first, dir, 7), dir.join("summary-7.txt"));
+        assert_eq!(own_summary_file(&mut second, dir, 8), dir.join("summary-8.txt"));
+        assert!(first.windows(2).any(|w| w[0] == "-o" && w[1] == "/tmp/task/summary-7.txt"));
+        assert!(second.windows(2).any(|w| w[0] == "-o" && w[1] == "/tmp/task/summary-8.txt"));
+        assert_eq!(first.iter().filter(|a| *a == "-o").count(), 1);
     }
 }
 

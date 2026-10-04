@@ -173,3 +173,281 @@ export function toBase64(buf: ArrayBuffer): string {
   }
   return btoa(s);
 }
+
+// ---------- echo cancellation ----------
+// With echo cancellation on, the microphone and Jarvis's voice both go through one native helper
+// (jarvis-audio vpio, see sysaudio.rs) that runs Apple's voice processing: Jarvis's voice plays
+// through the same audio engine that records the mic, so the canceller knows what to remove and
+// Jarvis can be interrupted by voice even on speakers.
+
+/** What the voice conversation needs from a microphone. */
+export interface VoiceMic {
+  onChunk: (pcmBase64: string) => void;
+  start(device?: string): Promise<void>;
+  level(): number;
+  stop(): void;
+  /** True when Jarvis's own voice is removed from what the mic hears. */
+  readonly echoCancelled?: boolean;
+}
+
+/** What the voice conversation needs from a speaker. */
+export interface VoicePlayer {
+  resume(): Promise<void>;
+  chime(): void;
+  play(base64: string): void;
+  readonly speaking: boolean;
+  stop(): void;
+  level(): number;
+}
+
+type VoiceEvent = { kind: "level" | "idle" | "ended"; level: number; done: number; message: string };
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** Frames of 16-bit audio in a base64 string. */
+function framesIn(b64: string): number {
+  const pad = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((b64.length * 3) / 4) - pad) >> 1;
+}
+
+/** The one voice-processing helper shared by the mic and the player. Every call to Rust goes
+ * through one queue, so starts, audio, flushes and stops reach the helper in order. */
+class VoiceHelper {
+  running = false;
+  micActive = false;
+  onMic: ((pcm: string, level: number) => void) | null = null;
+  onEnded: ((message: string) => void) | null = null;
+  outLevel = 0;
+  /** 24 kHz frames sent to play, reported played (or dropped), and dropped by our own flush. */
+  private written = 0;
+  private done = 0;
+  private flushedTo = 0;
+  private device = "";
+  private generation = 0;
+  private queue: Promise<unknown> = Promise.resolve();
+
+  get speaking(): boolean {
+    return this.running && Math.max(this.done, this.flushedTo) < this.written;
+  }
+
+  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const p = this.queue.then(fn);
+    this.queue = p.catch(() => {});
+    return p;
+  }
+
+  private reset() {
+    this.running = false;
+    this.generation++;
+    this.written = this.done = this.flushedTo = 0;
+    this.outLevel = 0;
+  }
+
+  start(device: string): Promise<void> {
+    return this.enqueue(async () => {
+      if (this.running && this.device === device) return;
+      if (this.running) {
+        this.reset();
+        await invoke("vp_stop").catch(() => {});
+      }
+      const gen = ++this.generation;
+      const chunks = new Channel<{ pcm: string; level: number }>();
+      chunks.onmessage = (m) => {
+        if (gen === this.generation) this.onMic?.(m.pcm, m.level);
+      };
+      const events = new Channel<VoiceEvent>();
+      events.onmessage = (e) => {
+        if (gen === this.generation) this.event(e);
+      };
+      await invoke("vp_start", { onChunk: chunks, onVoice: events, device });
+      this.running = true;
+      this.device = device;
+    });
+  }
+
+  private event(e: VoiceEvent) {
+    if (e.kind === "ended") {
+      this.reset();
+      this.onEnded?.(e.message || "Echo cancellation stopped.");
+      return;
+    }
+    this.done = Math.max(this.done, e.done);
+    this.outLevel = e.kind === "level" ? e.level : 0;
+    if (e.kind === "idle") this.stopIfUnused();
+  }
+
+  play(b64: string) {
+    const frames = framesIn(b64);
+    if (!frames) return;
+    this.written += frames;
+    const gen = this.generation;
+    this.enqueue(() => invoke("vp_play", { pcm: b64 })).catch(() => {
+      // The helper went away mid-sentence; don't stay "speaking" forever.
+      if (gen === this.generation) this.done = this.written;
+    });
+  }
+
+  flush() {
+    this.flushedTo = this.written;
+    this.outLevel = 0;
+    if (this.running) this.enqueue(() => invoke("vp_flush")).catch(() => {});
+    this.stopIfUnused();
+  }
+
+  /** Close the helper (and so the microphone) once nothing needs it. */
+  stopIfUnused() {
+    if (!this.running || this.micActive || this.speaking) return;
+    this.reset();
+    this.enqueue(() => invoke("vp_stop")).catch(() => {});
+  }
+}
+
+const voiceHelper = new VoiceHelper();
+
+/** The microphone with Apple's echo cancellation. Same interface as NativeMic. If voice processing
+ * can't start, it falls back to the plain microphone and `echoCancelled` turns false, so the
+ * caller can go back to pausing the mic while Jarvis talks. */
+export class VoiceProcessedMic implements VoiceMic {
+  onChunk: (pcmBase64: string) => void = () => {};
+  /** Told when the microphone stops by itself and can't be restarted. */
+  onError: (message: string) => void = () => {};
+  echoCancelled = true;
+  /** Why echo cancellation isn't in use, when it fell back. */
+  fallbackReason = "";
+  private lastLevel = 0;
+  private active = false;
+  private device = "";
+  private plain: NativeMic | null = null;
+  private restarts: number[] = [];
+
+  async start(device = "") {
+    this.active = true;
+    this.device = device;
+    voiceHelper.micActive = true;
+    voiceHelper.onMic = (pcm, level) => {
+      if (!this.active || this.plain) return;
+      this.lastLevel = level;
+      this.onChunk(pcm);
+    };
+    voiceHelper.onEnded = (message) => this.restart(message);
+    try {
+      await voiceHelper.start(device);
+      this.echoCancelled = true;
+      // Stopped while it was starting.
+      if (!this.active) voiceHelper.stopIfUnused();
+    } catch (e) {
+      voiceHelper.micActive = false;
+      if (!this.active) return;
+      this.echoCancelled = false;
+      this.fallbackReason = errorText(e);
+      console.warn("Echo cancellation unavailable, using the plain microphone:", this.fallbackReason);
+      const m = new NativeMic();
+      m.onChunk = (pcm) => {
+        if (!this.active) return;
+        this.lastLevel = m.level();
+        this.onChunk(pcm);
+      };
+      await m.start(device);
+      this.plain = m;
+    }
+  }
+
+  /** The helper stopped by itself: start it again, a few times a minute at most. */
+  private restart(message: string) {
+    if (!this.active || this.plain) return;
+    const now = Date.now();
+    this.restarts = this.restarts.filter((t) => now - t < 60_000);
+    if (this.restarts.length >= 3) {
+      this.onError(message);
+      return;
+    }
+    this.restarts.push(now);
+    setTimeout(() => {
+      if (this.active && !this.plain) this.start(this.device).catch((e) => this.onError(errorText(e)));
+    }, 500);
+  }
+
+  level(): number {
+    return this.plain ? this.plain.level() : this.lastLevel;
+  }
+
+  stop() {
+    this.active = false;
+    this.lastLevel = 0;
+    this.plain?.stop();
+    this.plain = null;
+    voiceHelper.micActive = false;
+    voiceHelper.stopIfUnused();
+  }
+}
+
+/** Plays Jarvis's voice through the echo-cancelled output while the echo-cancelled mic is on,
+ * and through the web view (like Player) otherwise. Same interface as Player. */
+export class NativePlayer implements VoicePlayer {
+  private web = new Player();
+
+  async resume() {
+    await this.web.resume();
+  }
+
+  chime() {
+    this.web.chime();
+  }
+
+  /** Keep a sentence on the output it started on, so the two never overlap. */
+  private useHelper(): boolean {
+    if (voiceHelper.speaking) return true;
+    if (this.web.speaking) return false;
+    return voiceHelper.running;
+  }
+
+  play(base64: string) {
+    if (this.useHelper()) voiceHelper.play(base64);
+    else this.web.play(base64);
+  }
+
+  get speaking(): boolean {
+    return voiceHelper.speaking || this.web.speaking;
+  }
+
+  stop() {
+    voiceHelper.flush();
+    this.web.stop();
+  }
+
+  level(): number {
+    return voiceHelper.speaking ? voiceHelper.outLevel : this.web.level();
+  }
+}
+
+/** Microphone and speaker for a voice conversation: echo-cancelled when the setting is on,
+ * otherwise the plain NativeMic and Player. */
+export function createVoiceIO(settings: { echoCancellation?: boolean }): { mic: VoiceMic; player: VoicePlayer } {
+  return { mic: createMic(settings), player: createPlayer(settings) };
+}
+
+export function createMic(settings: { echoCancellation?: boolean }): VoiceMic {
+  return settings.echoCancellation ? new VoiceProcessedMic() : new NativeMic();
+}
+
+export function createPlayer(settings: { echoCancellation?: boolean }): VoicePlayer {
+  return settings.echoCancellation ? new NativePlayer() : new Player();
+}
+
+export interface AudioRoute {
+  inputName: string;
+  outputName: string;
+  /** "bluetooth", "usb", "builtin"… or "" when unknown. */
+  inputTransport: string;
+  outputTransport: string;
+  sameDevice: boolean;
+  /** Sound goes to headphones or earbuds, so Jarvis can't hear itself. */
+  likelyHeadphones: boolean;
+}
+
+/** The current default microphone and speakers, and whether they look like headphones. */
+export function audioRoute(): Promise<AudioRoute> {
+  return invoke<AudioRoute>("audio_route");
+}

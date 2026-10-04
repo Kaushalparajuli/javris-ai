@@ -604,7 +604,8 @@ pub fn video_stop(folder: String) {
     if let Some(tx) = ANSWERS.lock().unwrap_or_else(|e| e.into_inner()).as_mut().and_then(|m| m.remove(&folder)) {
         let _ = tx.send(Answer { approve: false, feedback: String::new() });
     }
-    videokit::video_cancel();
+    // Only this video's render or check; another video being made carries on.
+    videokit::video_cancel(Some(folder));
 }
 
 /// Make a video from a brief. The project folder is made first (video_new). Runs in the background.
@@ -737,10 +738,21 @@ async fn render_draft(app: &AppHandle, rt: &Runtime, dir: &Path, folder: &str) -
     stage(app, folder, "render", "Rendering a draft…", Value::Null);
     let handle = app.clone();
     let key = folder.to_string();
-    videokit::render_public(rt, dir, "draft", move |percent, message| {
+    let render = videokit::render_public(rt, dir, "draft", move |percent, message| {
         let _ = handle.emit("video-render", json!({ "folder": key, "percent": percent, "message": message }));
-    })
-    .await
+    });
+    tokio::pin!(render);
+    // Stop works while it waits for another video's render too (a running render is killed by video_stop).
+    loop {
+        tokio::select! {
+            done = &mut render => return done,
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                if stopped(folder) {
+                    return Err("Stopped.".into());
+                }
+            }
+        }
+    }
 }
 
 /// Look at the draft's frames. Quietly does nothing without a Gemini key or if the look fails.

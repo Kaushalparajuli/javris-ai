@@ -42,7 +42,8 @@ fn scopes_for(svc: &str) -> Option<String> {
     let list: &[&str] = match svc {
         "mail" => &["gmail.readonly", "gmail.compose"],
         "calendar" => &["calendar.events"],
-        "drive" => &["drive.readonly", "documents", "spreadsheets"],
+        // drive.file: files Jarvis itself creates in Drive (slide decks it uploads), nothing else.
+        "drive" => &["drive.readonly", "drive.file", "documents", "spreadsheets"],
         "youtube" => &["youtube.readonly"],
         _ => return None,
     };
@@ -856,6 +857,8 @@ mod tests {
         assert!(scopes_for("youtube").unwrap().contains("youtube.readonly"));
         assert!(!scopes_for("youtube").unwrap().contains("drive"));
         assert!(scopes_for("drive").unwrap().contains("spreadsheets"));
+        assert!(scopes_for("drive").unwrap().split_whitespace().any(|s| s == "https://www.googleapis.com/auth/drive.file"), "uploading slides needs drive.file");
+        assert!(!scopes_for("drive").unwrap().split_whitespace().any(|s| s == "https://www.googleapis.com/auth/drive"), "never the whole of Drive");
         assert!(!scopes_for("calendar").unwrap().contains("gmail"));
         assert!(scopes_for("nope").is_none());
         for svc in SERVICES {

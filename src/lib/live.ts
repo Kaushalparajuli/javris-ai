@@ -64,10 +64,28 @@ function log(line: string) {
 
 const MAX_RETRIES = 8;
 
+/** Protobuf durations arrive as strings like "50s" or "4.5s". */
+function parseSeconds(v: unknown): number | undefined {
+  const n = typeof v === "number" ? v : parseFloat(String(v ?? ""));
+  return Number.isFinite(n) ? n : undefined;
+}
+
 export class LiveSession {
   private ws?: WebSocket;
-  /** A replacement connection being set up after a goAway, swapped in once ready. */
-  private next?: WebSocket;
+  /** The connection being closed on purpose after a goAway; its close starts the resumed one. */
+  private rotating?: WebSocket;
+  private rotateBy = 0;
+  private rotateTimer?: number;
+  /** For finding a quiet moment: Jarvis mid-reply, the user mid-sentence, or a tool call unanswered. */
+  private modelBusy = false;
+  private lastUserText = 0;
+  private toolsPending = 0;
+  /** Which connection each tool call came from: a reply after a switch-over can't use the old id. */
+  private callSocket = new Map<string, WebSocket>();
+  /** Calls Gemini took back because the conversation moved on; their results are dropped. */
+  private cancelled = new Set<string>();
+  /** Turns sent while reconnecting, delivered once the new connection is ready. Audio isn't kept. */
+  private queued: object[] = [];
   private handle?: string;
   private closedByUser = false;
   private retries = 0;
@@ -78,7 +96,7 @@ export class LiveSession {
 
   connect() {
     this.closedByUser = false;
-    this.ws = this.open(false);
+    this.ws = this.open();
   }
 
   private setupMessage() {
@@ -99,13 +117,12 @@ export class LiveSession {
     };
   }
 
-  /** Open a socket. A hand-off socket only becomes the active one once its setup completes. */
-  private open(handoff: boolean): WebSocket {
+  private open(): WebSocket {
     const n = ++this.attempt;
     const resumed = !!this.handle;
     const openedAt = Date.now();
     let wasReady = false;
-    log(`#${n} connecting model=${this.cfg.model} resume=${resumed} handoff=${handoff}`);
+    log(`#${n} connecting model=${this.cfg.model} resume=${resumed}`);
     const ws = new WebSocket(`${WS}?key=${encodeURIComponent(this.cfg.apiKey)}`);
 
     ws.onopen = () => ws.send(JSON.stringify(this.setupMessage()));
@@ -120,30 +137,22 @@ export class LiveSession {
       if (msg.setupComplete) {
         wasReady = true;
         log(`#${n} ready in ${Date.now() - openedAt}ms`);
-        if (handoff) {
-          if (this.next !== ws || this.closedByUser) return ws.close();
-          const old = this.ws;
-          this.ws = ws;
-          this.next = undefined;
-          old?.close();
-          log(`#${n} hand-off complete`);
-          this.ready = true;
-          this.retries = 0;
-          return;
-        }
       }
       if (ws === this.ws) this.route(msg);
-      else if (ws === this.next && msg.sessionResumptionUpdate?.newHandle) this.handle = msg.sessionResumptionUpdate.newHandle;
     };
     ws.onclose = (ev) => {
       const secs = ((Date.now() - openedAt) / 1000).toFixed(0);
       log(`#${n} closed code=${ev.code} reason="${ev.reason}" after ${secs}s ready=${wasReady}`);
-      if (ws === this.next) {
-        // The hand-off connection failed; the current one keeps going until it closes.
-        this.next = undefined;
+      if (ws === this.rotating) {
+        // Closed on purpose at a quiet moment: resume the same conversation on a fresh connection.
+        this.rotating = undefined;
+        if (!this.closedByUser && this.ws === ws) setTimeout(() => !this.closedByUser && this.ws === ws && (this.ws = this.open()), 300);
         return;
       }
       if (ws !== this.ws || this.closedByUser) return;
+      this.stopRotateWatch();
+      this.modelBusy = false;
+      this.toolsPending = 0;
       this.ready = false;
 
       let reason = ev.reason || `Connection closed (code ${ev.code})`;
@@ -167,7 +176,7 @@ export class LiveSession {
       this.retries++;
       this.h.onClosed(reason, true);
       setTimeout(() => {
-        if (!this.closedByUser && this.ws === ws) this.ws = this.open(false);
+        if (!this.closedByUser && this.ws === ws) this.ws = this.open();
       }, delay);
     };
     return ws;
@@ -178,9 +187,13 @@ export class LiveSession {
       this.ready = true;
       this.retries = 0;
       this.h.onReady();
+      for (const m of this.queued.splice(0)) this.send(m);
     }
     const sc = msg.serverContent;
     if (sc) {
+      if (sc.modelTurn) this.modelBusy = true;
+      if (sc.interrupted || sc.turnComplete) this.modelBusy = false;
+      if (sc.inputTranscription?.text) this.lastUserText = Date.now();
       if (sc.interrupted) this.h.onInterrupted();
       if (sc.inputTranscription?.text) this.h.onInputText(sc.inputTranscription.text);
       if (sc.outputTranscription?.text) this.h.onOutputText(sc.outputTranscription.text);
@@ -189,20 +202,59 @@ export class LiveSession {
       }
       if (sc.turnComplete) this.h.onTurnComplete();
     }
-    if (msg.toolCall?.functionCalls?.length) this.h.onToolCall(msg.toolCall.functionCalls);
+    for (const id of msg.toolCallCancellation?.ids ?? []) {
+      this.cancelled.add(id);
+      log(`tool call ${id} cancelled by Gemini`);
+    }
+    if (msg.toolCall?.functionCalls?.length) {
+      this.toolsPending += msg.toolCall.functionCalls.length;
+      for (const fc of msg.toolCall.functionCalls) if (fc.id && this.ws) this.callSocket.set(fc.id, this.ws);
+      this.h.onToolCall(msg.toolCall.functionCalls);
+    }
     if (msg.sessionResumptionUpdate?.resumable && msg.sessionResumptionUpdate.newHandle) {
       this.handle = msg.sessionResumptionUpdate.newHandle;
     }
     if (msg.goAway) {
-      // The server will end this connection soon. Open the replacement now and swap once it's ready,
-      // so the conversation carries on without a gap.
+      // The server will end this connection soon. Gemini won't resume a session while its old
+      // connection is still open, so switch over in sequence, at the first quiet moment before
+      // the deadline, rather than being cut off mid-sentence when time runs out.
+      const left = parseSeconds(msg.goAway.timeLeft) ?? 30;
       log(`goAway timeLeft=${msg.goAway.timeLeft ?? "?"}`);
-      if (!this.next && this.handle) this.next = this.open(true);
+      this.rotateBy = Date.now() + Math.max(0, left - 5) * 1000;
+      this.watchForQuiet();
     }
+  }
+
+  private watchForQuiet() {
+    this.stopRotateWatch();
+    this.rotateTimer = window.setInterval(() => {
+      const ws = this.ws;
+      if (!ws || this.closedByUser || !this.handle) return this.stopRotateWatch();
+      const quiet = !this.modelBusy && this.toolsPending === 0 && Date.now() - this.lastUserText > 1500;
+      if (!quiet && Date.now() < this.rotateBy) return;
+      this.stopRotateWatch();
+      log(quiet ? "rotating at a quiet moment" : "rotating at the deadline");
+      this.rotating = ws;
+      this.ready = false;
+      ws.close(1000, "rotate");
+    }, 250);
+  }
+
+  private stopRotateWatch() {
+    window.clearInterval(this.rotateTimer);
+    this.rotateTimer = undefined;
   }
 
   private send(obj: object) {
     if (this.ws?.readyState === WebSocket.OPEN && this.ready) this.ws.send(JSON.stringify(obj));
+  }
+
+  /** Send a whole turn now, or keep it for the next connection if this one is switching over. */
+  private sendTurn(obj: object) {
+    if (this.ready && this.ws?.readyState === WebSocket.OPEN) return this.send(obj);
+    if (this.closedByUser || !this.ws) return;
+    this.queued.push(obj);
+    if (this.queued.length > 20) this.queued.shift();
   }
 
   sendAudio(pcm: ArrayBuffer) {
@@ -219,25 +271,43 @@ export class LiveSession {
 
   /** A typed message, or a system notice, as a complete user turn. */
   sendText(text: string) {
-    this.send({ clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete: true } });
+    this.sendTurn({ clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete: true } });
   }
 
   /** A user turn with text plus images (e.g. attached logos) that the model can see. */
   sendTextWithImages(text: string, images: { mimeType: string; data: string }[]) {
     const parts: object[] = [{ text }, ...images.map((img) => ({ inlineData: img }))];
-    this.send({ clientContent: { turns: [{ role: "user", parts }], turnComplete: true } });
+    this.sendTurn({ clientContent: { turns: [{ role: "user", parts }], turnComplete: true } });
   }
 
-  sendToolResponses(responses: { id: string; name: string; response: object }[]) {
-    this.send({ toolResponse: { functionResponses: responses } });
+  sendToolResponses(all: { id: string; name: string; response: object }[]) {
+    this.toolsPending = Math.max(0, this.toolsPending - all.length);
+    const responses = all.filter((r) => !this.cancelled.delete(r.id));
+    const current = responses
+      .filter((r) => this.callSocket.get(r.id) === this.ws)
+      // Gemini 3.8 Live runs tools in the background and keeps talking. WHEN_IDLE has it speak the
+      // result at the next pause instead of cutting itself off mid-sentence.
+      .map((r) => ({ ...r, scheduling: "WHEN_IDLE" }));
+    const stale = responses.filter((r) => this.callSocket.get(r.id) !== this.ws);
+    for (const r of responses) this.callSocket.delete(r.id);
+    if (current.length) this.send({ toolResponse: { functionResponses: current } });
+    // Asked for before the connection was renewed: the new one doesn't know that call id, so pass
+    // the result on as a note instead of losing it.
+    for (const r of stale) {
+      log(`tool result for ${r.name} arrived after a reconnect; passed on as a note`);
+      this.sendText(`[APP] Result of ${r.name}, which you asked for just before the connection was renewed: ${JSON.stringify(r.response)}`);
+    }
   }
 
   close() {
     this.closedByUser = true;
     this.ready = false;
     this.ws?.close();
-    this.next?.close();
+    this.stopRotateWatch();
     this.ws = undefined;
-    this.next = undefined;
+    this.rotating = undefined;
+    this.queued = [];
+    this.callSocket.clear();
+    this.cancelled.clear();
   }
 }

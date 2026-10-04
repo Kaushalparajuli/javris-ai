@@ -12,6 +12,7 @@ import type { Task, VideoProgress } from "../lib/types";
 import BrowserView from "./BrowserView";
 import SitePreview from "./SitePreview";
 import ImageThumb from "./ImageThumb";
+import SlidesView from "./SlidesView";
 import { hydrateImages } from "../lib/docImages";
 import PanelControls from "./PanelControls";
 
@@ -65,7 +66,7 @@ export default function ReportViewer({
   }, [html, task.dir]);
 
   useEffect(() => {
-    if (task.kind === "image") return;
+    if (task.kind === "image" || task.kind === "slides") return;
     let live = true;
     const load = () =>
       invoke<string>("read_report", { id: task.id })
@@ -128,7 +129,7 @@ export default function ReportViewer({
       <header>
         <div className="report-head">
           <div className="label">
-            {task.kind === "image" ? "Images" : task.kind === "browser" ? "Browser task" : "Report"} · task #{task.id}
+            {task.kind === "image" ? "Images" : task.kind === "slides" ? "Slide deck" : task.kind === "browser" ? "Browser task" : "Report"} · task #{task.id}
             {running ? " · running" : task.status !== "done" ? ` · ${task.status}` : ""}
           </div>
           <h2>{task.title}</h2>
@@ -204,7 +205,9 @@ export default function ReportViewer({
         </details>
       )}
 
-      {task.kind === "image" ? (
+      {task.kind === "slides" ? (
+        <SlidesView task={task} />
+      ) : task.kind === "image" ? (
         <div className="gallery">
           <p className="prompt">{task.request}</p>
           {task.refs?.length > 0 && (

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { useMemo, useState } from "react";
@@ -104,7 +105,17 @@ export default function VideoTab({
       {stage === "storyboard" && progress?.board && (
         <div className="vt-board">
           <div className="label">Storyboard · approve it or ask for changes</div>
-          <div className="markdown vt-md" dangerouslySetInnerHTML={{ __html: board }} />
+          <div
+            className="markdown vt-md"
+            // Links open in the browser instead of replacing Jarvis's window.
+            onClick={(e) => {
+              const link = (e.target as HTMLElement).closest("a");
+              if (!link) return;
+              e.preventDefault();
+              if (/^https?:/i.test(link.href)) openUrl(link.href).catch(() => {});
+            }}
+            dangerouslySetInnerHTML={{ __html: board }}
+          />
           {asking ? (
             <form
               className="vt-feedback"

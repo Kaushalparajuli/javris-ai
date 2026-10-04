@@ -56,6 +56,17 @@ pub struct Settings {
     pub elevenlabs_voice: String,
     /// The ElevenLabs model for narration.
     pub elevenlabs_model: String,
+    /// The owner's own Telegram bot (from @BotFather), for using Jarvis from their phone.
+    pub telegram_token: String,
+    /// The one Telegram chat Jarvis listens to, set by pairing. 0 means not paired.
+    pub telegram_chat_id: i64,
+    /// Listen for Telegram messages. Pairing turns it on.
+    pub telegram_enabled: bool,
+    /// Use Apple's echo cancellation on the microphone, so Jarvis can be interrupted by voice even
+    /// on speakers. Beta: off until turned on in Settings.
+    pub echo_cancellation: bool,
+    /// When recording a meeting, also record what the Mac plays (the other side of a call).
+    pub meeting_system_audio: bool,
 }
 
 impl Default for Settings {
@@ -85,6 +96,11 @@ impl Default for Settings {
             narration_gemini_voice: "Kore".into(),
             elevenlabs_voice: String::new(),
             elevenlabs_model: "eleven_multilingual_v2".into(),
+            echo_cancellation: false,
+            meeting_system_audio: false,
+            telegram_token: String::new(),
+            telegram_chat_id: 0,
+            telegram_enabled: false,
         }
     }
 }
