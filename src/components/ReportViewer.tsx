@@ -8,12 +8,21 @@ import { safeFileName } from "../lib/exportDocx";
 import { printableHtml } from "../lib/exportPdf";
 import { askSavePath, fileNameOf } from "../lib/saveAs";
 import type { DirectorState } from "../lib/director";
-import type { Task } from "../lib/types";
+import type { Task, VideoProgress } from "../lib/types";
 import BrowserView from "./BrowserView";
 import SitePreview from "./SitePreview";
 import ImageThumb from "./ImageThumb";
 import { hydrateImages } from "../lib/docImages";
 import PanelControls from "./PanelControls";
+
+/** The video progress for a project folder, matching on the last two folder names in case the paths are spelled differently. */
+function progressFor(map: Record<string, VideoProgress> | undefined, project: string) {
+  if (!map) return undefined;
+  if (map[project]) return map[project];
+  const tail = project.split("/").filter(Boolean).slice(-2).join("/");
+  const key = Object.keys(map).find((k) => k.split("/").filter(Boolean).slice(-2).join("/") === tail);
+  return key ? map[key] : undefined;
+}
 
 /**
  * A research report or an image task in the side panel. While the worker runs it shows the
@@ -27,11 +36,17 @@ export default function ReportViewer({
   onClose,
   director,
   onReview,
+  onOpenTask,
+  video,
 }: {
   task: Task;
   /** The visual director's work on this site, if it has looked at it. */
   director?: DirectorState;
   onReview: () => void;
+  /** Show another task in the panel (a change made from the site preview). */
+  onOpenTask: (id: number) => void;
+  /** How far each video project's making has got, by folder. */
+  video?: Record<string, VideoProgress>;
   /** A browser task is driving Jarvis's browser right now. */
   browserBusy: boolean;
   expanded: boolean;
@@ -151,7 +166,7 @@ export default function ReportViewer({
       )}
 
       {task.kind === "browser" && <BrowserView canUse={!browserBusy} />}
-      {hasPreview && <SitePreview folder={task.project!} running={running} director={director} onReview={onReview} />}
+      {hasPreview && <SitePreview folder={task.project!} running={running} director={director} onReview={onReview} chatId={task.chatId} onOpenTask={onOpenTask} videoProgress={progressFor(video, task.project!)} />}
       {hasPreview && (running || steps.length > 0) && (
         <details className="activity" open={running}>
           <summary>

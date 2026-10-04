@@ -44,6 +44,18 @@ pub struct Settings {
     pub active_workspace: String,
     /// How many Codex workers may run at once; the rest wait their turn.
     pub max_workers: u32,
+    /// API keys for third-party services that videos can use, by service id ("elevenlabs"). A new
+    /// service is added by giving it an id here and a provider in voices.rs (or wherever it is used).
+    pub service_keys: HashMap<String, String>,
+    /// Who speaks a video's narration: "auto" (ElevenLabs when it has a key, otherwise Gemini),
+    /// "gemini" or "elevenlabs".
+    pub narration_provider: String,
+    /// The Gemini voice for narration (Kore, Puck, Charon…).
+    pub narration_gemini_voice: String,
+    /// The ElevenLabs voice id for narration; empty uses a default voice.
+    pub elevenlabs_voice: String,
+    /// The ElevenLabs model for narration.
+    pub elevenlabs_model: String,
 }
 
 impl Default for Settings {
@@ -68,6 +80,11 @@ impl Default for Settings {
             approvals: HashMap::new(),
             active_workspace: String::new(),
             max_workers: 3,
+            service_keys: HashMap::new(),
+            narration_provider: "auto".into(),
+            narration_gemini_voice: "Kore".into(),
+            elevenlabs_voice: String::new(),
+            elevenlabs_model: "eleven_multilingual_v2".into(),
         }
     }
 }

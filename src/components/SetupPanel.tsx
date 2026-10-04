@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useState } from "react";
-import type { CodexStatus, Settings } from "../lib/types";
+import type { CodexStatus, HeygenStatus, Settings, VideoStatus } from "../lib/types";
 
 /** Everything Jarvis needs, in three buttons: the voice key, the research helper, the ChatGPT sign-in. */
 export default function SetupPanel({
@@ -22,8 +22,20 @@ export default function SetupPanel({
   const [busy, setBusy] = useState<"" | "install" | "login">("");
   const [line, setLine] = useState("");
   const [link, setLink] = useState("");
+  // Making videos is optional: its own tools, and HeyGen's free catalog of music, photos, icons and voices.
+  const [video, setVideo] = useState<VideoStatus | null>(null);
+  const [heygen, setHeygen] = useState<HeygenStatus | null>(null);
+  const [vbusy, setVbusy] = useState<"" | "video" | "heygen" | "captions">("");
+  const [vline, setVline] = useState("");
+  const [vpct, setVpct] = useState<number | null>(null);
+  const [verror, setVerror] = useState("");
+  const [hlink, setHlink] = useState("");
 
-  const check = () => invoke<CodexStatus>("codex_status").then(setCodex);
+  const check = () => {
+    invoke<VideoStatus>("video_status").then(setVideo).catch(() => {});
+    invoke<HeygenStatus>("heygen_status").then(setHeygen).catch(() => {});
+    return invoke<CodexStatus>("codex_status").then(setCodex);
+  };
   useEffect(() => {
     check();
     const a = listen<string>("codex-install", (e) => setLine(e.payload));
@@ -32,11 +44,56 @@ export default function SetupPanel({
       const url = e.payload.match(/https?:\/\/\S+/)?.[0];
       if (url) setLink(url);
     });
+    const c = listen<{ message: string; percent: number | null }>("video-setup", (e) => {
+      setVline(e.payload.message);
+      setVpct(e.payload.percent);
+    });
+    const d = listen<string>("heygen-login", (e) => setHlink(e.payload));
     return () => {
       a.then((f) => f());
       b.then((f) => f());
+      c.then((f) => f());
+      d.then((f) => f());
     };
   }, []);
+
+  const setUpVideo = async () => {
+    setVbusy("video");
+    setVerror("");
+    setVline("Starting…");
+    try {
+      setVideo(await invoke<VideoStatus>("video_setup"));
+    } catch (e) {
+      setVerror(String(e));
+    }
+    setVbusy("");
+    setVpct(null);
+  };
+  const getCaptions = async () => {
+    setVbusy("captions");
+    setVerror("");
+    setVline("Downloading the speech model…");
+    try {
+      setVideo(await invoke<VideoStatus>("captions_install"));
+    } catch (e) {
+      setVerror(String(e));
+    }
+    setVbusy("");
+    setVpct(null);
+  };
+  const connectHeygen = async () => {
+    setVbusy("heygen");
+    setVerror("");
+    setHlink("");
+    setVline("Getting HeyGen…");
+    try {
+      setHeygen(await invoke<HeygenStatus>("heygen_connect"));
+    } catch (e) {
+      setVerror(String(e));
+    }
+    setVbusy("");
+    setVpct(null);
+  };
 
   const saveKey = async () => {
     try {
@@ -79,8 +136,9 @@ export default function SetupPanel({
           </button>
         </header>
 
+        <div className="setup-body">
         <ol className="setup-steps">
-          <li className={keyDone ? "ok" : ""}>
+          <li className={keyDone ? "done" : ""}>
             <span className="n">{keyDone ? "✓" : "1"}</span>
             <div>
               <b>Turn on Jarvis's voice</b>
@@ -99,7 +157,7 @@ export default function SetupPanel({
               {keyMsg && <small>{keyMsg}</small>}
             </div>
           </li>
-          <li className={installed ? "ok" : ""}>
+          <li className={installed ? "done" : ""}>
             <span className="n">{installed ? "✓" : "2"}</span>
             <div>
               <b>Install the research helper</b>
@@ -111,7 +169,7 @@ export default function SetupPanel({
               </button>
             )}
           </li>
-          <li className={signedIn ? "ok" : ""}>
+          <li className={signedIn ? "done" : ""}>
             <span className="n">{signedIn ? "✓" : "3"}</span>
             <div>
               <b>Connect your ChatGPT account</b>
@@ -141,6 +199,69 @@ export default function SetupPanel({
             )}
           </li>
         </ol>
+
+        <div className="setup-extra">
+          <div className="label">Optional · make videos</div>
+          <ul className="setup-steps">
+            <li className={video?.ready ? "done" : ""}>
+              <span className="n">{video?.ready ? "✓" : "+"}</span>
+              <div>
+                <b>Video tools</b>
+                <small>
+                  {vbusy === "video" ? vline || "Setting up…" : video?.ready ? "Ready. Jarvis can make videos." : video?.message ?? "Checking…"}
+                </small>
+                {vbusy === "video" && vpct != null && (
+                  <div className="setup-bar" aria-hidden="true">
+                    <i style={{ width: `${vpct}%` }} />
+                  </div>
+                )}
+                {verror && vbusy === "" && <small className="warn">{verror}</small>}
+              </div>
+              {!video?.ready && (
+                <button className="btn primary" onClick={setUpVideo} disabled={!!vbusy || video === null}>
+                  {vbusy === "video" ? "Setting up…" : "Set up video"}
+                </button>
+              )}
+            </li>
+            <li className={video?.captions ? "done" : ""}>
+              <span className="n">{video?.captions ? "✓" : "+"}</span>
+              <div>
+                <b>Exact caption timing</b>
+                <small>
+                  {vbusy === "captions" ? vline : video?.captions ? "Installed. Captions follow the spoken words exactly." : "Optional. Without it, captions are timed by estimate. About 700 MB, once."}
+                </small>
+              </div>
+              {!video?.captions && (
+                <button className="btn" onClick={getCaptions} disabled={!!vbusy || !video?.ready}>
+                  {vbusy === "captions" ? "Downloading…" : "Download"}
+                </button>
+              )}
+            </li>
+            <li className={heygen?.signedIn ? "done" : ""}>
+              <span className="n">{heygen?.signedIn ? "✓" : "+"}</span>
+              <div>
+                <b>HeyGen catalog (free)</b>
+                <small>
+                  {vbusy === "heygen" ? "Finish signing in in your browser, then come back here." : heygen?.signedIn ? "Connected. Music, photos, icons and voices are available to videos." : "Music, photos and icons for videos. Optional: videos still get sound effects and Jarvis-made pictures without it."}
+                </small>
+                {vbusy === "heygen" && hlink && (
+                  <small>
+                    Browser didn't open?{" "}
+                    <a href={hlink} onClick={(e) => (e.preventDefault(), openUrl(hlink))}>
+                      Open the sign-in page
+                    </a>
+                  </small>
+                )}
+              </div>
+              {!heygen?.signedIn && (
+                <button className="btn" onClick={connectHeygen} disabled={!!vbusy || !video?.ready}>
+                  {vbusy === "heygen" ? "Waiting…" : "Connect"}
+                </button>
+              )}
+            </li>
+          </ul>
+        </div>
+        </div>
 
         <footer>
           <button className="linkish" onClick={onAdvanced}>

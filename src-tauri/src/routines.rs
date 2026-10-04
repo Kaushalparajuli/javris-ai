@@ -997,7 +997,7 @@ pub fn delete_know_how(app: AppHandle, slug: String) -> Result<(), String> {
     Ok(())
 }
 
-fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for e in std::fs::read_dir(src)?.flatten() {
         let name = e.file_name();
@@ -1017,16 +1017,25 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 // ---------- built-in know-how ----------
 
 /// Know-how that ships with Jarvis: (folder name, [(file path, contents)]).
-const BUILTIN: &[(&str, &[(&str, &str)])] = &[(
-    "website-design",
-    &[
-        ("SKILL.md", include_str!("../skills/website-design/SKILL.md")),
-        ("references/tokens-and-base.css", include_str!("../skills/website-design/references/tokens-and-base.css")),
-        ("references/page-skeleton.html", include_str!("../skills/website-design/references/page-skeleton.html")),
-    ],
-)];
+const BUILTIN: &[(&str, &[(&str, &str)])] = &[
+    (
+        "website-design",
+        &[
+            ("SKILL.md", include_str!("../skills/website-design/SKILL.md")),
+            ("references/tokens-and-base.css", include_str!("../skills/website-design/references/tokens-and-base.css")),
+            ("references/page-skeleton.html", include_str!("../skills/website-design/references/page-skeleton.html")),
+        ],
+    ),
+    (
+        "video-design",
+        &[
+            ("SKILL.md", include_str!("../skills/video-design/SKILL.md")),
+            ("references/video-skeleton.html", include_str!("../skills/video-design/references/video-skeleton.html")),
+        ],
+    ),
+];
 /// Raise this when the built-in files change, so installs that haven't edited them get the new ones.
-const BUILTIN_VERSION: u32 = 2;
+const BUILTIN_VERSION: u32 = 4;
 
 /// A small stable hash (FNV-1a), to tell whether the user has edited a built-in skill.
 fn fingerprint(text: &str) -> u64 {
@@ -1096,7 +1105,9 @@ pub(crate) fn copy_know_how(app: &AppHandle, slugs: &[String], dir: &Path) -> Ve
     let mut out = vec![];
     for slug in slugs {
         let Ok(slug) = valid_slug(slug) else { continue };
-        let src = base.join(&slug);
+        // The user's own know-how first, then the HyperFrames skills that come with the video kit.
+        let own = base.join(&slug);
+        let src = if own.join("SKILL.md").is_file() { own } else { crate::videokit::skill_path(app, &slug).unwrap_or(own) };
         if !src.join("SKILL.md").is_file() || src.join(".draft").exists() || out.contains(&slug) {
             continue;
         }

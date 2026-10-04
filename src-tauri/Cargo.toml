@@ -33,6 +33,7 @@ tokio-tungstenite = "0.30"
 tract-onnx = "0.23"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sha2 = "0.10"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 getrandom = "0.3"
 rusqlite = { version = "0.37", features = ["bundled"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

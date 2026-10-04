@@ -1,0 +1,122 @@
+<!doctype html>
+<!-- A complete, valid 12-second 1920x1080 composition: three scenes with crossfades, a staggered list,
+     captions and a voiceover track. Copy its structure; replace the content, colours and timing.
+     Scenes are `.clip` sections with data-start / data-duration; every animation lives on ONE paused
+     GSAP timeline registered at window.__timelines["main"]. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="vendor/gsap.min.js"></script>
+    <style>
+      :root {
+        --bg: #14100d;
+        --surface: #2a211b;
+        --text: #f7efe6;
+        --muted: #c9b8a6;
+        --accent: #f0a04b;
+        --display: ui-serif, Georgia, serif;
+        --body: system-ui, -apple-system, sans-serif;
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); }
+      #root { position: relative; width: 100%; height: 100%; overflow: hidden; font-family: var(--body); color: var(--text); }
+
+      /* Every scene fills the frame. Padding keeps text inside the safe area (about 8% each side). */
+      .scene { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; gap: 36px; padding: 120px 160px; }
+      .scene .bg { position: absolute; inset: 0; z-index: 0; }
+      .scene > *:not(.bg) { position: relative; z-index: 1; }
+
+      h1, h2 { font-family: var(--display); font-weight: 700; line-height: 1.05; letter-spacing: -0.02em; text-wrap: balance; }
+      h1 { font-size: 150px; max-width: 1400px; }
+      h2 { font-size: 96px; max-width: 1400px; }
+      .kicker { font-size: 34px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
+      .lead { font-size: 52px; line-height: 1.3; color: var(--muted); max-width: 1200px; }
+
+      #s1 .bg { background: radial-gradient(circle at 78% 30%, #4a2d17 0%, transparent 55%), var(--bg); }
+      #s2 .bg { background: var(--bg); }
+      #s3 .bg { background: linear-gradient(135deg, #3a2412, #14100d); }
+
+      .items { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; margin-top: 24px; }
+      .item { background: var(--surface); border-radius: 28px; padding: 48px; display: flex; flex-direction: column; gap: 16px; }
+      .item b { font-family: var(--display); font-size: 64px; color: var(--accent); }
+      .item span { font-size: 40px; line-height: 1.25; color: var(--text); }
+
+      .big { font-family: var(--display); font-size: 300px; font-weight: 700; color: var(--accent); line-height: 1; }
+
+      /* Captions: one short phrase at a time, bottom third, high contrast. */
+      .cap { position: absolute; left: 160px; right: 160px; bottom: 96px; text-align: center; z-index: 5; }
+      .cap span { display: inline-block; font-size: 52px; line-height: 1.25; padding: 14px 32px; border-radius: 18px; background: rgba(0, 0, 0, 0.62); color: #fff; max-width: 1500px; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="12" data-width="1920" data-height="1080">
+      <!-- Scene 1: the hook (0 - 4s). Scenes overlap by 0.5s so they can crossfade. -->
+      <section id="s1" class="clip scene" data-start="0" data-duration="4.5" data-track-index="0">
+        <div class="bg"></div>
+        <p class="kicker" id="s1-kicker">Rani's Bakery · Patan</p>
+        <h1 id="s1-title">Warm bread, every morning.</h1>
+        <p class="lead" id="s1-lead">Baked at 4am, on your table by 7.</p>
+      </section>
+
+      <!-- Scene 2: three things, staggered (4 - 8.5s). -->
+      <section id="s2" class="clip scene" data-start="4" data-duration="4.5" data-track-index="1">
+        <div class="bg"></div>
+        <p class="kicker" id="s2-kicker">What we bake</p>
+        <h2 id="s2-title">Three favourites.</h2>
+        <div class="items">
+          <div class="item" id="s2-i1"><b>01</b><span>Sel roti, crisp outside, soft inside</span></div>
+          <div class="item" id="s2-i2"><b>02</b><span>Lakhamari for festivals</span></div>
+          <div class="item" id="s2-i3"><b>03</b><span>Sourdough, slow-risen for two days</span></div>
+        </div>
+      </section>
+
+      <!-- Scene 3: one number and the call to action (8 - 12s). -->
+      <section id="s3" class="clip scene" data-start="8" data-duration="4" data-track-index="2">
+        <div class="bg"></div>
+        <p class="kicker" id="s3-kicker">Open every day</p>
+        <div class="big" id="s3-big">7am</div>
+        <p class="lead" id="s3-lead">Mangal Bazaar, Patan. Call 9800000000 to order.</p>
+      </section>
+
+      <!-- Captions: separate clips on their own track, timed to the narration. -->
+      <div id="c1" class="clip cap" data-start="0.4" data-duration="3.2" data-track-index="5"><span>Warm bread, every morning.</span></div>
+      <div id="c2" class="clip cap" data-start="4.2" data-duration="3.6" data-track-index="5"><span>Sel roti, lakhamari and slow-risen sourdough.</span></div>
+      <div id="c3" class="clip cap" data-start="8.3" data-duration="3.4" data-track-index="5"><span>Open from seven. Call to order.</span></div>
+
+    </div>
+
+    <script>
+      const tl = gsap.timeline({ paused: true });
+
+      // Set the starting state inside the tween (fromTo), never with a CSS transform on the same property.
+      // Scene 1
+      tl.fromTo("#s1-kicker", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.6, ease: "power2.out" }, 0.2);
+      tl.fromTo("#s1-title", { opacity: 0, y: 60 }, { opacity: 1, y: 0, duration: 0.9, ease: "power3.out" }, 0.4);
+      tl.fromTo("#s1-lead", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.7, ease: "power2.out" }, 1.2);
+      tl.to("#s1-title", { scale: 1.04, duration: 3.6, ease: "none" }, 0.4); // slow push-in so it never sits still
+      tl.to("#s1", { opacity: 0, duration: 0.5, ease: "power1.inOut" }, 4.0); // crossfade out as scene 2 arrives
+
+      // Scene 2
+      tl.fromTo("#s2", { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power1.inOut" }, 4.0);
+      tl.fromTo("#s2-kicker", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.5 }, 4.5);
+      tl.fromTo("#s2-title", { opacity: 0, y: 40 }, { opacity: 1, y: 0, duration: 0.7, ease: "power3.out" }, 4.6);
+      tl.fromTo(".item", { opacity: 0, y: 70 }, { opacity: 1, y: 0, duration: 0.7, ease: "back.out(1.4)", stagger: 0.25 }, 5.3);
+      tl.to("#s2", { opacity: 0, duration: 0.5, ease: "power1.inOut" }, 8.0);
+
+      // Scene 3
+      tl.fromTo("#s3", { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power1.inOut" }, 8.0);
+      tl.fromTo("#s3-kicker", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.5 }, 8.4);
+      tl.fromTo("#s3-big", { opacity: 0, scale: 0.8 }, { opacity: 1, scale: 1, duration: 0.9, ease: "back.out(1.6)" }, 8.6);
+      tl.fromTo("#s3-lead", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.7 }, 9.5);
+
+      // Captions fade in and out inside their own windows.
+      ["#c1", "#c2", "#c3"].forEach((id, i) => {
+        const at = [0.4, 4.2, 8.3][i];
+        tl.fromTo(id + " span", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.3 }, at);
+      });
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

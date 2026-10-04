@@ -117,8 +117,13 @@ fn host_ok(host: &str, port: u16) -> bool {
 }
 
 async fn respond(stream: &mut TcpStream, status: &str, ctype: &str, body: &[u8], head_only: bool) {
+    respond_with(stream, status, ctype, body, head_only, "").await
+}
+
+/// `extra` is more header lines, each ending in \r\n.
+async fn respond_with(stream: &mut TcpStream, status: &str, ctype: &str, body: &[u8], head_only: bool, extra: &str) {
     let head = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n{extra}Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(head.as_bytes()).await;
@@ -126,6 +131,29 @@ async fn respond(stream: &mut TcpStream, status: &str, ctype: &str, body: &[u8],
         let _ = stream.write_all(body).await;
     }
     let _ = stream.shutdown().await;
+}
+
+/// The byte range a `Range: bytes=…` header asks for, as inclusive (start, end) within a file of `len`
+/// bytes. Open-ended requests get at most `CHUNK` bytes; browsers ask again for the rest.
+fn parse_range(header: &str, len: u64) -> Option<(u64, u64)> {
+    const CHUNK: u64 = 4 * 1024 * 1024;
+    let spec = header.trim().strip_prefix("bytes=")?;
+    if spec.contains(',') || len == 0 {
+        return None;
+    }
+    let (a, b) = spec.split_once('-')?;
+    let (start, end) = match (a.trim(), b.trim()) {
+        ("", suffix) => {
+            let n: u64 = suffix.parse().ok()?;
+            (len.saturating_sub(n.min(len)), len - 1)
+        }
+        (from, "") => {
+            let from: u64 = from.parse().ok()?;
+            (from, (from + CHUNK - 1).min(len - 1))
+        }
+        (from, to) => (from.parse().ok()?, to.parse::<u64>().ok()?.min(len - 1)),
+    };
+    (start <= end && start < len).then_some((start, end))
 }
 
 async fn handle(mut stream: TcpStream, port: u16) {
@@ -158,6 +186,7 @@ async fn handle(mut stream: TcpStream, port: u16) {
     if !host_ok(host, port) {
         return respond(&mut stream, "403 Forbidden", "text/plain", b"Forbidden", false).await;
     }
+    let range = text.lines().find_map(|l| l.strip_prefix("Range:").or_else(|| l.strip_prefix("range:"))).map(str::to_string);
     let head_only = method == "HEAD";
     if method != "GET" && !head_only {
         return respond(&mut stream, "405 Method Not Allowed", "text/plain", b"Method not allowed", false).await;
@@ -175,8 +204,35 @@ async fn handle(mut stream: TcpStream, port: u16) {
         (real.starts_with(&base) && real.is_file()).then_some(real)
     });
     match resolved {
+        // A media file asked for by range (browsers insist on it for video): send just that part.
+        Some(path) if range.is_some() && (mime(&path).starts_with("video/") || mime(&path).starts_with("audio/")) => {
+            let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            match range.as_deref().and_then(|r| parse_range(r, len)) {
+                Some((start, end)) => {
+                    use tokio::io::AsyncSeekExt;
+                    let part = async {
+                        let mut f = tokio::fs::File::open(&path).await.ok()?;
+                        f.seek(std::io::SeekFrom::Start(start)).await.ok()?;
+                        let mut buf = vec![0u8; (end - start + 1) as usize];
+                        f.read_exact(&mut buf).await.ok()?;
+                        Some(buf)
+                    }
+                    .await;
+                    match part {
+                        Some(buf) => respond_with(&mut stream, "206 Partial Content", mime(&path), &buf, head_only, &format!("Content-Range: bytes {start}-{end}/{len}\r\nAccept-Ranges: bytes\r\n")).await,
+                        None => respond(&mut stream, "404 Not Found", "text/plain", b"Not found", head_only).await,
+                    }
+                }
+                None => respond_with(&mut stream, "416 Range Not Satisfiable", "text/plain", b"Bad range", head_only, &format!("Content-Range: bytes */{len}\r\n")).await,
+            }
+        }
         Some(path) if std::fs::metadata(&path).map(|m| m.len() <= MAX_FILE).unwrap_or(false) => match tokio::fs::read(&path).await {
-            Ok(bytes) => respond(&mut stream, "200 OK", mime(&path), &bytes, head_only).await,
+            Ok(bytes) => {
+                // A page shown in the app (asked for with ?jvpick=1) can be pointed at; nothing else is touched.
+                let picking = target.contains("jvpick=1") && mime(&path).starts_with("text/html");
+                let body = if picking { crate::sitekit::with_pick_script(&bytes) } else { bytes };
+                respond_with(&mut stream, "200 OK", mime(&path), &body, head_only, "Accept-Ranges: bytes\r\n").await
+            }
             Err(_) => respond(&mut stream, "404 Not Found", "text/plain", b"Not found", head_only).await,
         },
         _ => respond(&mut stream, "404 Not Found", "text/plain", b"Not found", head_only).await,
@@ -227,7 +283,7 @@ fn fingerprint(dir: &Path, depth: u8, acc: &mut (u64, u64, u64)) {
 }
 
 /// A project folder under the research folder, resolved, or an error saying why not.
-fn project_dir(app: &AppHandle, folder: &str) -> Result<(PathBuf, PathBuf), String> {
+pub(crate) fn project_dir(app: &AppHandle, folder: &str) -> Result<(PathBuf, PathBuf), String> {
     let root = root(app);
     let base = root.canonicalize().map_err(|_| "There's nothing to preview yet.".to_string())?;
     let dir = PathBuf::from(folder).canonicalize().map_err(|_| "That folder isn't there yet.".to_string())?;
@@ -393,6 +449,28 @@ mod tests {
         assert_eq!(mime(Path::new("x.unknown")), "application/octet-stream");
     }
 
+    async fn get_range(port: u16, target: &str, host: &str, range: &str) -> String {
+        let mut c = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        c.write_all(format!("GET {target} HTTP/1.1\r\nHost: {host}\r\nRange: {range}\r\n\r\n").as_bytes()).await.unwrap();
+        let mut out = Vec::new();
+        c.read_to_end(&mut out).await.unwrap();
+        String::from_utf8_lossy(&out).to_string()
+    }
+
+    #[test]
+    fn byte_ranges_are_read_the_way_browsers_ask_for_them() {
+        assert_eq!(parse_range("bytes=10-19", 100), Some((10, 19)));
+        assert_eq!(parse_range("bytes=90-", 100), Some((90, 99)));
+        assert_eq!(parse_range("bytes=0-", 10_000_000), Some((0, 4 * 1024 * 1024 - 1)), "open-ended asks get a chunk");
+        assert_eq!(parse_range("bytes=-20", 100), Some((80, 99)));
+        assert_eq!(parse_range("bytes=50-5000", 100), Some((50, 99)), "the end is clipped to the file");
+        assert_eq!(parse_range("bytes=500-", 100), None);
+        assert_eq!(parse_range("bytes=20-10", 100), None);
+        assert_eq!(parse_range("bytes=0-5,10-15", 100), None, "several ranges aren't supported");
+        assert_eq!(parse_range("items=0-5", 100), None);
+        assert_eq!(parse_range("bytes=0-5", 0), None);
+    }
+
     async fn get(port: u16, target: &str, host: &str) -> String {
         let mut c = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         c.write_all(format!("GET {target} HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes()).await.unwrap();
@@ -434,6 +512,24 @@ mod tests {
         assert!(get(port, "/demo/files/%2e%2e/%2e%2e/%2e%2e/secret.txt", &host).await.starts_with("HTTP/1.1 404"));
         assert!(get(port, "/demo/files/.hidden", &host).await.starts_with("HTTP/1.1 404"));
         assert!(get(port, "/demo/files/index.html", "evil.example").await.starts_with("HTTP/1.1 403"));
+        // Video is served in ranges, which is what lets the app's player scrub a rendered video.
+        std::fs::write(site.join("clip.mp4"), (0..100u8).collect::<Vec<u8>>()).unwrap();
+        let part = get_range(port, "/demo/files/clip.mp4", &host, "bytes=10-19").await;
+        assert!(part.starts_with("HTTP/1.1 206") && part.contains("Content-Range: bytes 10-19/100") && part.contains("Content-Length: 10\r\n"), "{part}");
+        let tail = get_range(port, "/demo/files/clip.mp4", &host, "bytes=90-").await;
+        assert!(tail.contains("Content-Range: bytes 90-99/100"));
+        assert!(get_range(port, "/demo/files/clip.mp4", &host, "bytes=500-").await.starts_with("HTTP/1.1 416"));
+        let whole = get(port, "/demo/files/clip.mp4", &host).await;
+        assert!(whole.starts_with("HTTP/1.1 200") && whole.contains("Accept-Ranges: bytes") && whole.contains("Content-Type: video/mp4"));
+        // A page shown in the app can be pointed at; the same page for anyone else is untouched.
+        std::fs::write(site.join("pick.html"), "<html><body><h1>Hi</h1></body></html>").unwrap();
+        std::fs::write(site.join("a.js"), "var x = 1; // </body>").unwrap();
+        assert!(!get(port, "/demo/files/pick.html", &host).await.contains("jv-picked"), "the director and a browser see the page untouched");
+        let shown = get(port, "/demo/files/pick.html?jvpick=1&r=5", &host).await;
+        assert!(shown.contains("jv-picked") && shown.contains("<h1>Hi</h1>"));
+        let len: usize = shown.lines().find_map(|l| l.strip_prefix("Content-Length: ")).unwrap().trim().parse().unwrap();
+        assert_eq!(len, shown.split("\r\n\r\n").nth(1).unwrap().len(), "Content-Length matches the longer page");
+        assert!(!get(port, "/demo/files/a.js?jvpick=1", &host).await.contains("jv-picked"), "only pages get the script");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

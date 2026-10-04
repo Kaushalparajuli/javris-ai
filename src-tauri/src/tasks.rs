@@ -1749,7 +1749,7 @@ async fn close_browser(child: &mut tokio::process::Child, work: &Path) {
 
 /// Where an export may be written: an absolute path the user picked in the save dialog, with the
 /// extension the export expects, into a folder that exists.
-fn export_target(path: &str, ext: &str) -> Result<PathBuf, String> {
+pub(crate) fn export_target(path: &str, ext: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
     let matches = p.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case(ext)).unwrap_or(false);
     if !p.is_absolute() || !matches || p.file_name().is_none() {
@@ -2024,6 +2024,28 @@ fn code_prompt(request: &str, screen: &str, project: &Path, dir: &Path, mode: &s
             screen.trim()
         )
     };
+    if mode == "video" {
+        return format!(
+            "You are a senior motion designer and front-end engineer making a video in the current directory ({project}) with HeyGen's HyperFrames. \
+             A video here is an HTML page (index.html) whose elements carry their timing in data-* attributes and whose motion is one paused GSAP timeline; \
+             Jarvis renders it to an MP4 after you finish.\n\
+             {request}\n{screen}\n\
+             How to work:\n\
+             - Read know-how/video-design/SKILL.md first: it holds Jarvis's rules and wins wherever it differs. It points you to HyperFrames' own skills, which are \
+               in know-how/ too: start with know-how/hyperframes/SKILL.md (the production flow), then read only the reference files for what you are doing. Don't read everything.\n\
+             - Where the HyperFrames docs say `npx hyperframes <command>`, run `./hf <command>` in this folder instead. Your sandbox cannot start a browser, a local server \
+               or the network, so `check`, `snapshot`, `preview`, `render`, `add`, `media-use`, `tts` and `transcribe` fail for you with permission errors: Jarvis runs them between stages. \
+               The one command you can use is `./hf lint` (static checks): run it before you finish and fix every error.\n\
+             - Never try to download or generate media yourself. When something must be fetched or made (catalog blocks, music, sound effects, photos, icons, logos, voiceover, \
+               generated pictures), say so in requests.json as the stage instructions describe, and use the files Jarvis puts in assets/ (listed in assets/manifest.json). \
+               Never reference a file that is not in this folder.\n\
+             - Work only inside this folder. Never commit, push, delete files you didn't create, or run destructive commands.\n\
+             Write a short report to {report} in markdown: '## What I did', '## Sample content' (anything you invented), '## Left for you'.\n\
+             Your FINAL message is read aloud: two or three plain spoken sentences. No markdown, no paths.",
+            project = project.display(),
+            report = report.display(),
+        );
+    }
     if mode == "polish" {
         return format!(
             "You are a senior front-end engineer carrying out a visual director's review of the website in the current directory ({project}). \
@@ -2117,6 +2139,14 @@ pub fn start_code_task(
     let s = settings::load(&app);
     let codex = find_codex(&app, &s).ok_or("Codex CLI was not found. Open Settings to install it.")?;
     let project = check_project(&app, &project)?;
+    let mode = mode.unwrap_or_else(|| "fix".into());
+    // A website being built or changed: keep how it is now (so "go back" works), and give a 3D request
+    // Three.js as a local file.
+    let is_site = mode == "build" || mode == "polish" || mode == "video";
+    if is_site {
+        crate::sitekit::snapshot_before(&project, &request);
+    }
+    let three = (mode == "build" || mode == "video") && crate::sitekit::ensure_three(&project, &request);
     let title = if title.trim().is_empty() { truncate(&request, 60) } else { title };
     let task = new_task(&app, "code", &title, &request, "deep", None, None, chat_id.as_deref().unwrap_or(""))?;
     set_project(&app, task.id, &project);
@@ -2129,7 +2159,12 @@ pub fn start_code_task(
     // Skills the worker should follow (the design skill for a website), copied next to its notes.
     let know = crate::routines::copy_know_how(&app, &know_how.unwrap_or_default(), &dir);
     let mut args = code_args(&s, &dir, &project);
-    args.push(format!("{}{}", code_prompt(&request, &screen, &project, &dir, mode.as_deref().unwrap_or("fix")), crate::routines::know_how_rule(&know)));
+    args.push(format!(
+        "{}{}{}",
+        code_prompt(&request, &screen, &project, &dir, &mode),
+        crate::routines::know_how_rule(&know),
+        if three { crate::sitekit::THREE_RULE } else { "" }
+    ));
     save_index(&app);
     let _ = app.emit("task-update", &task);
     tauri::async_runtime::spawn(run_codex(app.clone(), task.id, args, dir, codex));

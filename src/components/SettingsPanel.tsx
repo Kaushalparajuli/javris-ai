@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { DEFAULT_RULE, RISK_INFO, ruleFor, type Risk, type Rule } from "../lib/approvals";
 import { LANGUAGES } from "../lib/languages";
 import { listLiveModels } from "../lib/live";
+import VideoSettings from "./VideoSettings";
 import type { CodexModels, CodexStatus, MicDevice, Settings } from "../lib/types";
 
 const VOICES = ["Charon", "Puck", "Kore", "Fenrir", "Aoede", "Leda", "Orus", "Zephyr"];
@@ -25,6 +26,7 @@ const levelName = (l: string) => LEVEL_NAMES[l] ?? l;
 const NAV = [
   { id: "general", label: "General", words: "name call you notifications notify", icon: "M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7zm0 2a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM10.7 2h2.6l.5 2.4 1.7.7 2.1-1.3 1.8 1.8-1.3 2.1.7 1.7 2.4.5v2.6l-2.4.5-.7 1.7 1.3 2.1-1.8 1.8-2.1-1.3-1.7.7-.5 2.4h-2.6l-.5-2.4-1.7-.7-2.1 1.3-1.8-1.8 1.3-2.1-.7-1.7L2 13.3v-2.6l2.4-.5.7-1.7-1.3-2.1 1.8-1.8 2.1 1.3 1.7-.7z" },
   { id: "voice", label: "Voice", words: "gemini api key model language speak nepali english hindi", icon: "M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3zm-5 8h2a3 3 0 0 0 6 0h2a5 5 0 0 1-4 4.9V19h-2v-3.1A5 5 0 0 1 7 11z" },
+  { id: "video", label: "Video", words: "video narration voiceover elevenlabs voice api key services music captions hyperframes", icon: "M4 6h11a1 1 0 0 1 1 1v3.5l5-3v9l-5-3V17a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z" },
   { id: "mic", label: "Microphone", words: "mic headphones hey jarvis wake word listen input", icon: "M5 10h2v4H5zm4-4h2v12H9zm4 2h2v8h-2zm4 2h2v4h-2z" },
   { id: "research", label: "Research", words: "codex model thinking folder web search worker", icon: "M10.5 3a7.5 7.5 0 0 1 5.9 12.1l4.3 4.3-1.4 1.4-4.3-4.3A7.5 7.5 0 1 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z" },
   { id: "google", label: "Apps", words: "google gmail calendar mail drive docs sheets youtube connect account sign in integrations", icon: "M3 5h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm1 2v.5l8 5 8-5V7zm16 2.9-8 5-8-5V17h16z" },
@@ -32,7 +34,7 @@ const NAV = [
   { id: "screen", label: "Screen & approvals", words: "accessibility screen recording permission approve ask never audit write send", icon: "M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5zm0 2.1 6 2.2V11c0 3.9-2.5 7.6-6 8.9-3.5-1.3-6-5-6-8.9V6.3zM11 8h2v5h-2zm0 6h2v2h-2z" },
 ];
 
-export default function SettingsPanel({ initial, onClose, onSaved }: { initial: Settings; onClose: () => void; onSaved: () => void }) {
+export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }: { initial: Settings; onClose: () => void; onSaved: () => void; onOpenSetup?: () => void }) {
   const [s, setS] = useState<Settings>(initial);
   const [models, setModels] = useState<string[]>([]);
   const [modelMsg, setModelMsg] = useState("");
@@ -309,6 +311,10 @@ export default function SettingsPanel({ initial, onClose, onSaved }: { initial: 
               : "Jarvis replies in whatever language you speak to it."}
           </p>
           {modelMsg && <p className="hint">{modelMsg}</p>}
+          </section>
+          <section hidden={!show("video")}>
+            {q && <div className="label">{NAV.find((n) => n.id === "video")?.label}</div>}
+            <VideoSettings s={s} set={set} onOpenSetup={onOpenSetup} />
           </section>
           <section hidden={!show("mic")}>
             {q && <div className="label">{NAV.find((n) => n.id === "mic")?.label}</div>}

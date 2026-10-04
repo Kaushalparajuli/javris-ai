@@ -114,7 +114,16 @@ Semantic landmarks, one `<h1>`, headings in order, `lang` set, visible `:focus-v
 
 Don't ship: a purple-to-blue gradient on white, three identical icon-in-a-circle cards, emoji icons, everything centred, glassmorphism on every surface, thick coloured borders on every card, tiny grey text, stock-photo hero text clouds, five different shadows, more than two fonts, or a hero with no visual. If a section could belong to any company, rewrite it for this one.
 
-## 13. Self-review before you finish
+## 13. 3D and motion scenes (only when the brief asks for 3D, or it clearly serves the subject)
+
+- If `vendor/three.min.js` exists in the site folder, Three.js is available. Load it with a plain `<script src="vendor/three.min.js"></script>` before your own script. It defines the global `THREE`, including `THREE.OrbitControls`. Do not use `import`, import maps, modules or a CDN for it, and don't edit that file.
+- Put the scene in its own `<canvas>` (a hero or a section background). Keep all text and navigation in normal HTML on top, so the page is complete without the scene.
+- Build visuals from code: geometry, procedural textures drawn on a canvas, particles, lights. No model or texture downloads.
+- Size the renderer to its container, handle `resize`, cap the pixel ratio at 2. Use `requestAnimationFrame`, pause when the tab is hidden or the canvas is off screen, and keep it light enough for a laptop and a phone (thousands of particles, not hundreds of thousands).
+- Respect `prefers-reduced-motion`: draw one still frame instead of animating. Wrap renderer creation in try/catch and show a styled static fallback if WebGL is unavailable.
+- `aria-hidden="true"` on a decorative canvas. Dragging to rotate must not block scrolling on a phone: use `touch-action: pan-y`, or enable the controls for desktop pointers only.
+
+## 14. Self-review before you finish
 
 Open every HTML file in your head (or by reading it) and check:
 - [ ] Every link, image, stylesheet and script path resolves; no dead `#` links except intentional ones.
@@ -125,5 +134,6 @@ Open every HTML file in your head (or by reading it) and check:
 - [ ] No lorem ipsum, no placeholder boxes, no broken emoji icons.
 - [ ] `DESIGN.md` lists the direction, palette, fonts and what was invented.
 - [ ] The site opens by double-clicking `index.html` (relative paths only).
+- [ ] If there is a 3D scene: it draws, resizes, pauses when hidden, and the page still works without it.
 
 Finally, write the report as instructed: what you built, the sample content you invented, how to open it, and what's left for the user.

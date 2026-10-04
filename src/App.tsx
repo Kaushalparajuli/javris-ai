@@ -293,6 +293,13 @@ export default function App() {
     checkSetup(true);
   }, [j.settings]);
 
+  // Jarvis asks for the Set up window when a video needs the video tools.
+  useEffect(() => {
+    const open = () => setShowSetup(true);
+    window.addEventListener("jarvis:open-setup", open);
+    return () => window.removeEventListener("jarvis:open-setup", open);
+  }, []);
+
   // A routine the voice just made or changed opens on the Routines page.
   useEffect(() => {
     if (j.focusRoutine) setPage("routines");
@@ -953,53 +960,75 @@ export default function App() {
             )}
 
             <form
-              className="dock"
+              className="composer"
               onSubmit={(e) => {
                 e.preventDefault();
                 j.sendTyped(typed);
                 setTyped("");
               }}
             >
-              <button type="button" className={`mic ${j.micOn ? "" : "off"}`} onClick={j.toggleMic} aria-label={j.micOn ? "Mute microphone" : "Start talking"}>
-                <svg viewBox="0 0 24 24">
-                  <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="icon-btn"
-                onClick={() => (j.meeting ? j.stopMeeting() : j.startMeeting(""))}
-                aria-label={j.meeting ? "Stop recording the meeting" : "Record a meeting"}
-                title={j.meeting ? "Stop recording" : "Record a meeting: transcript, decisions and action items"}
-              >
-                <svg viewBox="0 0 24 24">
-                  {j.meeting ? <path d="M7 7h10v10H7z" /> : <path d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm0-5C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16z" />}
-                </svg>
-              </button>
-              <button type="button" className="icon-btn clip" onClick={pickFiles} aria-label="Attach images" title="Attach logo or reference images">
-                <svg viewBox="0 0 24 24">
-                  <path d="M16.5 6.5v9.8a4.5 4.5 0 0 1-9 0V5.8a3 3 0 0 1 6 0v9.7a1.5 1.5 0 0 1-3 0V6.5H9v9a3 3 0 0 0 6 0V5.8a4.5 4.5 0 0 0-9 0v10.5a6 6 0 0 0 12 0V6.5z" />
-                </svg>
-              </button>
-              <ModePicker />
-              <input
-                id="typed"
-                className="typebox"
-                value={typed}
-                onChange={(e) => setTyped(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Tab" && e.shiftKey) {
-                    e.preventDefault();
-                    setMode(nextMode(getMode()));
-                  }
-                }}
-                placeholder="Type instead of speaking…"
-              />
-              {j.connection !== "off" && (
-                <button type="button" className="mini" onClick={j.disconnect}>
-                  End session
+              <div className="crow-top">
+                <button type="button" className={`cmic ${j.micOn ? "on" : ""}`} onClick={j.toggleMic} aria-label={j.micOn ? "Mute microphone" : "Start talking"} title={j.micOn ? "Mute (⌥Space)" : "Talk (⌥Space)"}>
+                  <svg viewBox="0 0 24 24">
+                    <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" />
+                  </svg>
                 </button>
-              )}
+                <div className="cbox">
+                  <input
+                    id="typed"
+                    className="typebox"
+                    value={typed}
+                    onChange={(e) => setTyped(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Tab" && e.shiftKey) {
+                        e.preventDefault();
+                        setMode(nextMode(getMode()));
+                      }
+                    }}
+                    placeholder="Type instead of speaking…"
+                  />
+                  {typed.trim() ? (
+                    <button type="submit" className="csend" aria-label="Send" title="Send (Enter)">
+                      <svg viewBox="0 0 24 24">
+                        <path d="M12 4l7 7-1.4 1.4L13 7.8V20h-2V7.8l-4.6 4.6L5 11z" />
+                      </svg>
+                    </button>
+                  ) : (
+                    j.connection !== "off" && (
+                      <button type="button" className="csend stop" onClick={j.disconnect} aria-label="End session" title="End session">
+                        <svg viewBox="0 0 24 24">
+                          <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 2a8 8 0 1 1 0 16 8 8 0 0 1 0-16zM9 9h6v6H9z" />
+                        </svg>
+                      </button>
+                    )
+                  )}
+                </div>
+              </div>
+              <div className="crow">
+                <button type="button" className="cbtn" onClick={pickFiles} aria-label="Attach images" title="Attach logo or reference images">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M11 4h2v7h7v2h-7v7h-2v-7H4v-2h7z" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  className={`cbtn ${j.meeting ? "rec" : ""}`}
+                  onClick={() => (j.meeting ? j.stopMeeting() : j.startMeeting(""))}
+                  aria-label={j.meeting ? "Stop recording the meeting" : "Record a meeting"}
+                  title={j.meeting ? "Stop recording" : "Record a meeting: transcript, decisions and action items"}
+                >
+                  <svg viewBox="0 0 24 24">
+                    {j.meeting ? <path d="M7 7h10v10H7z" /> : <path d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm0-5C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16z" />}
+                  </svg>
+                </button>
+                <ModePicker />
+                <span className="grow" />
+                <span className="cstat" role="status">
+                  <i className={`dot ${j.connection}`} />
+                  {j.connection === "live" ? (j.micOn ? "Listening" : "Muted") : MODE_LABEL[j.connection]}
+                  {running.length > 0 && <i className="spin" aria-label={`${running.length} worker${running.length > 1 ? "s" : ""} running`} title={`${running.length} running`} />}
+                </span>
+              </div>
             </form>
           </section>
         )}
@@ -1038,6 +1067,8 @@ export default function App() {
                 browserBusy={j.tasks.some((t) => t.kind === "browser" && t.status === "running")}
                 director={j.director[panelTask.id]}
                 onReview={() => j.reviewSite(panelTask.id)}
+                onOpenTask={j.setReportId}
+                video={j.video}
                 expanded={expanded}
                 onToggleExpand={() => setExpanded((x) => !x)}
                 onClose={closePanel}
@@ -1107,7 +1138,15 @@ export default function App() {
       <YtDock playing={ytPlaying} slot={page === "youtube" ? ytSlot : null} audioOnly={ytAudioOnly} onAudioOnly={audioOnly} jarvisSpeaking={speaking} onClose={() => setYtPlaying(null)} onOpenPage={() => { closePanel(); setPage("youtube"); }} />
 
       {showSettings && j.settings && (
-        <SettingsPanel initial={j.settings} onClose={() => setShowSettings(false)} onSaved={() => j.reloadSettings()} />
+        <SettingsPanel
+          initial={j.settings}
+          onClose={() => setShowSettings(false)}
+          onSaved={() => j.reloadSettings()}
+          onOpenSetup={() => {
+            setShowSettings(false);
+            setShowSetup(true);
+          }}
+        />
       )}
     </div>
   );

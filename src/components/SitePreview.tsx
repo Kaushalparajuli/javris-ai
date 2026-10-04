@@ -1,9 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DirectorState } from "../lib/director";
+import { safeFileName } from "../lib/exportDocx";
 import { highlight, languageOf } from "../lib/highlight";
+import { askSavePath, fileNameOf } from "../lib/saveAs";
+import { type Picked, pickedForWorker, pickedLabel } from "../lib/sitepick";
+import type { Task, VideoInfo, VideoProgress } from "../lib/types";
 import DirectorPanel from "./DirectorPanel";
+import VideoTab from "./VideoTab";
 
 interface Info {
   baseUrl: string;
@@ -15,6 +20,11 @@ interface PFile {
   path: string;
   size: number;
   modified: number;
+}
+interface Version {
+  n: number;
+  label: string;
+  at: number;
 }
 
 const SIZES = [
@@ -31,8 +41,29 @@ const kb = (n: number) => (n < 1024 ? `${n} B` : `${Math.round(n / 1024)} KB`);
  * The site being built, live: a Preview tab (the running site, in a frame) and a Code tab (the files
  * the worker has written, with syntax colours). Both follow the worker as it saves.
  */
-export default function SitePreview({ folder, running, director, onReview }: { folder: string; running: boolean; director?: DirectorState; onReview: () => void }) {
-  const [tab, setTab] = useState<"preview" | "code" | "review">("preview");
+export default function SitePreview({
+  folder,
+  running,
+  director,
+  onReview,
+  chatId,
+  onOpenTask,
+  videoProgress,
+}: {
+  folder: string;
+  running: boolean;
+  director?: DirectorState;
+  onReview: () => void;
+  /** How far the making of this folder's video has got, if it is a video. */
+  videoProgress?: VideoProgress;
+  /** The conversation a change made here belongs to. */
+  chatId: string;
+  /** Show a task that was just started (a change) in the panel. */
+  onOpenTask: (id: number) => void;
+}) {
+  const [tab, setTab] = useState<"video" | "preview" | "code" | "review">("preview");
+  const [vinfo, setVinfo] = useState<VideoInfo | null>(null);
+  const shownVideo = useRef(false);
   const [info, setInfo] = useState<Info | null>(null);
   const [shown, setShown] = useState(0);
   const [size, setSize] = useState<(typeof SIZES)[number]["id"]>("desktop");
@@ -43,6 +74,12 @@ export default function SitePreview({ folder, running, director, onReview }: { f
   const [text, setText] = useState<string | null>(null);
   const [readError, setReadError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState<Picked | null>(null);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [versions, setVersions] = useState<Version[] | null>(null);
+  const [note, setNote] = useState("");
   const last = useRef(0);
   const frame = useRef<HTMLIFrameElement>(null);
   const fileRef = useRef("");
@@ -105,6 +142,81 @@ export default function SitePreview({ folder, running, director, onReview }: { f
     };
   }, [tab, file, folder, info?.version]);
 
+  // A video project opens on its video; the page itself is only the first frame.
+  const folderVersion = info?.version;
+  useEffect(() => {
+    let live = true;
+    invoke<VideoInfo>("video_info", { folder })
+      .then((v) => {
+        if (!live) return;
+        setVinfo(v);
+        if (v.isVideo && !shownVideo.current) {
+          shownVideo.current = true;
+          setTab("video");
+        }
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [folder, folderVersion, videoProgress?.stage]);
+  const isVideo = !!vinfo?.isVideo;
+
+  // The page reports what the user clicked while "Point at a part" is on.
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.source !== frame.current?.contentWindow || e.data?.type !== "jv-picked") return;
+      setPicked(e.data.desc as Picked);
+      setPicking(false);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+  const tellFrame = useCallback(() => frame.current?.contentWindow?.postMessage({ type: "jv-pick", on: picking }, "*"), [picking]);
+  useEffect(tellFrame, [tellFrame]);
+
+  const send = async () => {
+    const instructions = draft.trim();
+    if (!instructions || sending) return;
+    setSending(true);
+    setNote("");
+    try {
+      const t = await invoke<Task>("site_change", { folder, instructions, region: picked ? pickedForWorker(picked) : null, chatId });
+      setDraft("");
+      setPicked(null);
+      onOpenTask(t.id);
+    } catch (e) {
+      setNote(String(e));
+    }
+    setSending(false);
+  };
+  const openVersions = async () => {
+    if (versions) return setVersions(null);
+    setVersions(await invoke<Version[]>("site_versions", { folder }).catch(() => []));
+  };
+  const goBack = async (v: Version) => {
+    try {
+      await invoke("restore_site_version", { folder, n: v.n });
+      setVersions(null);
+      setNote(`Went back to how it was ${v.label.replace(/^Before: /, "before “")}${v.label.startsWith("Before: ") ? "”" : ""}. The version you left is saved too.`);
+      setShown((n) => n + 1);
+    } catch (e) {
+      setNote(String(e));
+    }
+  };
+  const exportZip = async () => {
+    try {
+      const name = folder.split("/").filter(Boolean).pop() ?? "website";
+      const path = await askSavePath(safeFileName(name, "zip"), { name: "Zip file", ext: "zip" });
+      if (!path) return;
+      setNote("Making the zip…");
+      await invoke<string>("export_site", { folder, path });
+      setNote(`Saved ${fileNameOf(path)}`);
+    } catch (e) {
+      setNote(`Couldn't make the zip: ${e}`);
+    }
+  };
+
   const lines = useMemo(() => (text == null ? [] : highlight(text, file)), [text, file]);
   const width = SIZES.find((s) => s.id === size)!.width;
   const current = files.find((f) => f.path === file);
@@ -114,8 +226,13 @@ export default function SitePreview({ folder, running, director, onReview }: { f
     <div className="site-preview">
       <div className="sp-bar">
         <div className="seg" role="tablist" aria-label="Preview or code">
+          {isVideo && (
+            <button role="tab" aria-selected={tab === "video"} className={tab === "video" ? "on" : ""} onClick={() => setTab("video")}>
+              Video
+            </button>
+          )}
           <button role="tab" aria-selected={tab === "preview"} className={tab === "preview" ? "on" : ""} onClick={() => setTab("preview")}>
-            Preview
+            {isVideo ? "First frame" : "Preview"}
           </button>
           <button role="tab" aria-selected={tab === "code"} className={tab === "code" ? "on" : ""} onClick={() => setTab("code")}>
             Code{files.length ? ` · ${files.length}` : ""}
@@ -129,7 +246,7 @@ export default function SitePreview({ folder, running, director, onReview }: { f
           {running ? "Updating live" : ""}
         </span>
         <span className="grow" />
-        {tab === "review" ? null : tab === "preview" ? (
+        {tab === "review" || tab === "video" ? null : tab === "preview" ? (
           <>
             <div className="seg" role="group" aria-label="Screen size">
               {SIZES.map((s) => (
@@ -138,8 +255,17 @@ export default function SitePreview({ folder, running, director, onReview }: { f
                 </button>
               ))}
             </div>
-            <button className="mini" onClick={() => frame.current && info?.url && (frame.current.src = `${info.url}?r=${Date.now()}`)} disabled={!info?.hasPage}>
+            <button className={`mini ${picking ? "primary" : ""}`} aria-pressed={picking} onClick={() => setPicking((p) => !p)} disabled={!info?.hasPage}>
+              {picking ? "Click a part of the page…" : "Point at a part"}
+            </button>
+            <button className="mini" onClick={() => frame.current && info?.url && (frame.current.src = `${info.url}?jvpick=1&r=${Date.now()}`)} disabled={!info?.hasPage}>
               Reload
+            </button>
+            <button className="mini" onClick={openVersions} aria-expanded={!!versions} disabled={!info?.hasPage}>
+              Versions
+            </button>
+            <button className="mini" onClick={exportZip} disabled={!info?.hasPage}>
+              Zip
             </button>
             <button className="mini" onClick={() => info?.url && openUrl(info.url).catch(() => {})} disabled={!info?.hasPage}>
               Open in browser
@@ -167,7 +293,29 @@ export default function SitePreview({ folder, running, director, onReview }: { f
         )}
       </div>
 
-      {tab === "review" ? (
+      {tab === "preview" && !isVideo && versions && (
+        <div className="sp-versions" role="list" aria-label="Earlier versions">
+          {versions.length === 0 && <p className="muted small">No earlier versions yet. The site is saved before every change.</p>}
+          {versions.map((v) => (
+            <div key={v.n} className="sp-version" role="listitem">
+              <span>
+                <b>{v.label.replace(/^Before: /, "Before: ")}</b>
+                <small>
+                  {new Date(v.at).toLocaleDateString([], { day: "numeric", month: "short" })},{" "}
+                  {new Date(v.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </small>
+              </span>
+              <button className="mini" onClick={() => goBack(v)} disabled={running}>
+                Go back to this
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab === "video" && vinfo && info ? (
+        <VideoTab folder={folder} baseUrl={info.baseUrl} info={vinfo} progress={videoProgress} chatId={chatId} onChanged={() => setShown((n) => n + 1)} />
+      ) : tab === "review" ? (
         <div className="sp-review">
           <DirectorPanel state={director} running={running} onReview={onReview} />
         </div>
@@ -178,7 +326,15 @@ export default function SitePreview({ folder, running, director, onReview }: { f
           ) : !info?.hasPage ? (
             <p className="muted sp-note">{running ? "The first page appears here as soon as the worker saves it…" : "No web page was created in this folder."}</p>
           ) : (
-            <iframe ref={frame} key={shown} src={info.url} title="Website preview" className="sp-frame" style={width ? { width, maxWidth: "100%" } : undefined} />
+            <iframe
+              ref={frame}
+              key={shown}
+              src={`${info.url}?jvpick=1`}
+              title="Website preview"
+              className="sp-frame"
+              onLoad={tellFrame}
+              style={width ? { width, maxWidth: "100%" } : undefined}
+            />
           )}
         </div>
       ) : (
@@ -245,6 +401,44 @@ export default function SitePreview({ folder, running, director, onReview }: { f
             )}
           </div>
         </div>
+      )}
+
+      {tab === "preview" && info?.hasPage && !isVideo && (
+        <form
+          className="sp-ask"
+          onSubmit={(e) => {
+            e.preventDefault();
+            send();
+          }}
+        >
+          {picked && (
+            <div className="sp-picked">
+              <span>
+                Changing <b>{pickedLabel(picked)}</b>
+              </span>
+              <button type="button" className="mini" onClick={() => setPicked(null)} aria-label="Stop pointing at this">
+                ×
+              </button>
+            </div>
+          )}
+          {note && <p className="muted small sp-note-line">{note}</p>}
+          <div className="ask">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8zM19 14l.9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9z" />
+            </svg>
+            <input
+              id="site-ask"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder={picked ? "What should change here?" : "Tell Jarvis what to change, e.g. “make the header darker”"}
+              disabled={sending}
+              aria-label="Change the website"
+            />
+            <button className="btn primary" type="submit" disabled={!draft.trim() || sending || running}>
+              {sending ? "Sending…" : "Change it"}
+            </button>
+          </div>
+        </form>
       )}
     </div>
   );

@@ -55,6 +55,13 @@ export interface Settings {
   wakeWord: boolean;
   /** How to treat each kind of action: "ask", "auto" or "never". See lib/approvals.ts. */
   approvals: Record<string, string>;
+  /** API keys for outside services videos can use, by service id ("elevenlabs"). */
+  serviceKeys: Record<string, string>;
+  /** Who reads video narration: "auto", "gemini" or "elevenlabs". */
+  narrationProvider: string;
+  narrationGeminiVoice: string;
+  elevenlabsVoice: string;
+  elevenlabsModel: string;
 }
 
 export interface CodexStatus {
@@ -250,4 +257,55 @@ export interface Memory {
   source: string;
   created: number;
   pinned: boolean;
+}
+
+// ---- video ----
+
+export interface VideoStatus {
+  ready: boolean;
+  /** The speech model for exact caption timing is installed (optional). */
+  captions: boolean;
+  tools: boolean;
+  browser: string;
+  message: string;
+}
+
+export interface HeygenStatus {
+  installed: boolean;
+  signedIn: boolean;
+  message: string;
+}
+
+export interface VideoMeta {
+  title: string;
+  format: "landscape" | "portrait" | "square";
+  width: number;
+  height: number;
+  seconds: number;
+}
+
+export interface VideoRender {
+  path: string;
+  name: string;
+  size: number;
+  modified: number;
+}
+
+export interface VideoInfo {
+  isVideo: boolean;
+  meta: VideoMeta;
+  renders: VideoRender[];
+}
+
+/** Where a video is in the making, kept per project folder (see videopipe.rs). */
+export interface VideoProgress {
+  stage: "plan" | "storyboard" | "media" | "compose" | "check" | "fix" | "render" | "done" | "error" | "task";
+  message: string;
+  /** The storyboard waiting for an answer, in Markdown. */
+  board?: string;
+  /** Everything said so far, oldest first. */
+  log: string[];
+  render?: { percent: number; message: string };
+  error?: string;
+  note?: string;
 }

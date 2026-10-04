@@ -4,6 +4,7 @@ mod applog;
 mod capture;
 mod chats;
 mod context;
+mod cutout;
 mod director;
 mod fileindex;
 mod google;
@@ -18,10 +19,15 @@ mod mic;
 mod policy;
 mod preview;
 mod routines;
+mod sitekit;
 mod search;
 mod settings;
 mod tasks;
 mod verify;
+mod videokit;
+mod voices;
+mod videopipe;
+mod videoreview;
 mod wakeword;
 mod websearch;
 mod workspaces;
@@ -96,6 +102,8 @@ pub fn run() {
         .manage(context::ContextState::default())
         .setup(move |app| {
             tasks::load_index(app.handle());
+            #[cfg(debug_assertions)]
+            videopipe::e2e_hook(app.handle().clone());
             routines::install_builtin_skills(app.handle());
             memory::import_notes(app.handle());
             tauri::async_runtime::spawn(memory::embed_missing(app.handle().clone()));
@@ -260,6 +268,27 @@ pub fn run() {
             briefings::save_briefing,
             briefings::delete_briefing,
             briefings::run_briefing_now,
+            videokit::video_status,
+            videokit::video_setup,
+            videokit::video_new,
+            videokit::video_info,
+            videokit::video_check,
+            videokit::video_render,
+            videokit::video_cancel,
+            videokit::captions_install,
+            voices::elevenlabs_voices,
+            voices::service_test,
+            videopipe::video_make,
+            videopipe::video_edit,
+            videopipe::video_answer,
+            videopipe::video_stop,
+            videokit::heygen_status,
+            videokit::heygen_install,
+            videokit::heygen_connect,
+            sitekit::site_versions,
+            sitekit::restore_site_version,
+            sitekit::site_change,
+            sitekit::export_site,
             routines::list_routines,
             routines::save_routine,
             routines::delete_routine,
