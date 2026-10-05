@@ -2016,7 +2016,10 @@ pub fn resolve_project(app: AppHandle, name: String) -> Result<Vec<String>, Stri
     }
 }
 
-fn set_project(app: &AppHandle, id: u32, project: &Path) {
+/// Record which project folder (a site, a video, a code folder) a task belongs to. The UI groups
+/// every task with the same folder into one item, so a video's pictures and polish passes show
+/// up under that video instead of as separate entries.
+pub(crate) fn set_project(app: &AppHandle, id: u32, project: &Path) {
     if let Some(t) = app.state::<TaskStore>().tasks.lock().unwrap().get_mut(&id) {
         t.project = project.display().to_string();
     }

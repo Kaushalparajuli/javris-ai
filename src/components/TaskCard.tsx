@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useState } from "react";
 import type { Task } from "../lib/types";
+import type { WorkItem } from "../lib/workItems";
 import ImageThumb from "./ImageThumb";
 
 function elapsed(t: Task, now: number) {
@@ -33,7 +34,12 @@ function saveToDrive(task: Task, set: (d: { state: "busy" | "done" | "error"; li
     .catch((e) => set({ state: "error", error: String(e) }));
 }
 
-export default function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: number) => void }) {
+/**
+ * One piece of work in the tasks pane. With `item`, the card stands for the whole item (a video, a
+ * site, a document and all its edits): it shows the item's name, the latest run's progress, and
+ * the earlier runs as a short history.
+ */
+export default function TaskCard({ task, onOpen, item }: { task: Task; onOpen: (id: number) => void; item?: WorkItem }) {
   const [now, setNow] = useState(Date.now());
   const [drive, setDrive] = useState<{ state: "busy" | "done" | "error"; link?: string; error?: string } | null>(null);
   const running = task.status === "running";
@@ -47,6 +53,11 @@ export default function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: nu
   const steps = task.steps.slice(-6);
   const doneSteps = task.steps.filter((s) => s.done).length;
   const progress = running ? Math.min(92, 8 + doneSteps * 7) : 100;
+  const openId = (!running && item?.open?.id) || task.id;
+  const earlier = item ? item.runs.filter((r) => r.id !== task.id).reverse() : [];
+  const kindLabel =
+    item?.kind === "video" ? "video" : item?.kind === "site" ? "website" : task.kind === "image" ? "image" : task.kind === "document" ? "document" : task.kind === "browser" ? "browser" : task.kind === "code" ? "code" : task.kind === "skill" ? "know-how" : task.kind === "slides" ? "slides" : task.depth === "quick" ? "quick" : "deep dive";
+  const images = item && task.kind === "image" ? item.images : task.images;
 
   return (
     // The whole card opens the task in the side panel; its own buttons stop the click there.
@@ -54,28 +65,29 @@ export default function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: nu
       className={`task ${running ? "live" : ""} ${task.status}`}
       role="button"
       tabIndex={0}
-      aria-label={`Open ${task.title}`}
-      onClick={() => onOpen(task.id)}
+      aria-label={`Open ${item?.title ?? task.title}`}
+      onClick={() => onOpen(openId)}
       onKeyDown={(e) => {
         if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
           e.preventDefault();
-          onOpen(task.id);
+          onOpen(openId);
         }
       }}
     >
       <div className="task-top">
-        <h3>{task.title}</h3>
+        <h3>{item?.title ?? task.title}</h3>
         <span className={`pill ${check ? (task.verify === "running" ? "running" : task.verify === "failed" ? "failed" : "done") : task.status}`}>
           {check ? CHECK_PILL[task.verify as "running" | "passed" | "failed"] : PILL[task.status]}
           {!check && !running && task.status === "done" ? ` · ${elapsed(task, now)}` : ""}
         </span>
       </div>
       <div className="meta">
-        #{task.id} · {task.kind === "image" ? "image" : task.kind === "document" ? "document" : task.kind === "browser" ? "browser" : task.kind === "code" ? "code" : task.kind === "skill" ? "know-how" : task.depth === "quick" ? "quick" : "deep dive"} · {clock(task.startedAt)}
+        {kindLabel} · {clock(task.startedAt)}
         {running ? ` · ${elapsed(task, now)}` : ""}
-        {task.parentId ? ` · follow-up to #${task.parentId}` : ""}
+        {item && item.runs.length > 1 ? ` · ${item.runs.length} runs` : ""}
         {task.refs?.length ? ` · ${task.refs.length} reference${task.refs.length > 1 ? "s" : ""}` : ""}
       </div>
+      {item && item.runs.length > 1 && <div className="meta run-now">{running ? "Now: " : "Last: "}{task.title} · #{task.id}</div>}
       {running && (
         <div className="bar">
           <b style={{ width: `${progress}%` }} />
@@ -95,9 +107,9 @@ export default function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: nu
         </ul>
       )}
       {running && steps.length === 0 && <p className="muted small">Starting Codex…</p>}
-      {task.kind === "image" && task.images.length > 0 && (
-        <div className={`thumbs n${Math.min(task.images.length, 4)}`}>
-          {task.images.slice(0, 4).map((p) => (
+      {task.kind === "image" && images.length > 0 && (
+        <div className={`thumbs n${Math.min(images.length, 4)}`}>
+          {images.slice(0, 4).map((p) => (
             <ImageThumb key={p} path={p} className="thumb" alt={task.title} />
           ))}
         </div>
@@ -111,9 +123,9 @@ export default function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: nu
         </div>
       )}
       <div className="actions" onClick={(e) => e.stopPropagation()}>
-        {task.status === "done" && (
-          <button className="mini" onClick={() => onOpen(task.id)}>
-            {task.kind === "image" || task.kind === "browser" ? "View" : task.kind === "document" ? "Open document" : "Open report"}
+        {(task.status === "done" || item?.open) && (
+          <button className="mini" onClick={() => onOpen(openId)}>
+            {item?.kind === "video" ? "Open video" : item?.kind === "site" ? "Open site" : task.kind === "image" || task.kind === "browser" ? "View" : task.kind === "document" ? "Open document" : "Open report"}
           </button>
         )}
         <button className="mini" onClick={() => invoke("reveal_task", { id: task.id }).catch(() => {})}>
@@ -136,6 +148,23 @@ export default function TaskCard({ task, onOpen }: { task: Task; onOpen: (id: nu
           </button>
         )}
       </div>
+      {earlier.length > 0 && (
+        <details className="runs" onClick={(e) => e.stopPropagation()}>
+          <summary>Earlier runs ({earlier.length})</summary>
+          <ul>
+            {earlier.map((r) => (
+              <li key={r.id}>
+                <button className="run" onClick={() => onOpen(r.id)}>
+                  <span>{r.title}</span>
+                  <small>
+                    #{r.id} · {clock(r.startedAt)} · {PILL[r.status]}
+                  </small>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </article>
   );
 }

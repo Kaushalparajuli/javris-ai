@@ -705,6 +705,8 @@ async fn generate_image(app: &AppHandle, dir: &Path, meta: &videokit::VideoMeta,
             return vec![item];
         }
     };
+    // The picture belongs to this video: it's listed under it, not as a separate image.
+    tasks::set_project(app, task.id, dir);
     let done = loop {
         tokio::time::sleep(Duration::from_millis(1500)).await;
         match tasks::get_task(app, task.id) {

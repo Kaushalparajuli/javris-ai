@@ -3,7 +3,10 @@ import { day } from "../lib/format";
 import type { ChatSummary, Task } from "../lib/types";
 import ImageThumb from "./ImageThumb";
 
-type Kind = "all" | "research" | "document" | "slides" | "image" | "browser";
+type Kind = "all" | "research" | "document" | "slides" | "image" | "video" | "site" | "browser";
+
+/** A finished piece of work: its newest finished run, standing for every run it took. */
+export type LibraryItem = Task & { itemKind?: string; runs?: number };
 type Scope = "all" | "chat";
 
 const SCOPE_KEY = "jarvis.library.scope";
@@ -20,12 +23,22 @@ const KINDS: { id: Kind; label: string }[] = [
   { id: "research", label: "Reports" },
   { id: "document", label: "Docs" },
   { id: "slides", label: "Decks" },
+  { id: "video", label: "Videos" },
+  { id: "site", label: "Sites" },
   { id: "browser", label: "Browser" },
   { id: "image", label: "Images" },
 ];
 
 /** What a finished task is, in one short phrase under its title. */
-function subtitle(t: Task) {
+function subtitle(t: LibraryItem) {
+  const base = describe(t);
+  return t.runs && t.runs > 1 ? `${base} · ${t.runs} versions` : base;
+}
+
+function describe(t: LibraryItem) {
+  if (t.itemKind === "video") return "video";
+  if (t.itemKind === "site") return "website";
+  if (t.kind === "code") return "code";
   if (t.kind === "slides") return "slide deck";
   if (t.kind === "image") return t.images.length > 1 ? `${t.images.length} images` : "image";
   if (t.kind === "browser") return t.images.length ? `browser · ${t.images.length} screenshot${t.images.length === 1 ? "" : "s"}` : "browser";
@@ -45,7 +58,7 @@ export default function LibraryPage({
   onOpenFile,
   onClose,
 }: {
-  items: Task[];
+  items: LibraryItem[];
   /** The conversation that's open, for the "This chat" view. */
   chatId: string;
   chats: ChatSummary[];
@@ -72,7 +85,7 @@ export default function LibraryPage({
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return inScope
-      .filter((t) => (kind === "all" ? true : t.kind === kind))
+      .filter((t) => (kind === "all" ? true : t.itemKind ? t.itemKind === kind : t.kind === kind))
       .filter((t) => (needle ? `${t.title} ${t.request} ${t.summary}`.toLowerCase().includes(needle) : true))
       .sort((a, b) => (b.finishedAt ?? b.startedAt) - (a.finishedAt ?? a.startedAt));
   }, [inScope, q, kind]);

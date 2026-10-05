@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { groupWork } from "./lib/workItems";
+import type { LibraryItem } from "./components/LibraryPage";
 import DocumentEditor from "./components/DocumentEditor";
 import ChatRow from "./components/ChatRow";
 import ModePicker from "./components/ModePicker";
@@ -314,8 +316,14 @@ export default function App() {
   // Tasks saved before chats existed have no chatId, so they stay visible everywhere.
   const chatTasks = j.tasks.filter((t) => !t.chatId || t.chatId === j.chatId);
   const running = chatTasks.filter((t) => t.status === "running");
-  const shown: Task[] = filter === "active" ? chatTasks.filter((t) => t.status === "running" || Date.now() - (t.finishedAt ?? 0) < 6 * 3600e3).slice(0, 12) : chatTasks;
-  const library = j.tasks.filter((t) => t.status === "done" && (!t.parentId || t.kind === "image"));
+  // Every worker run on the same thing (a document and its edits, a video's storyboard, polish
+  // passes and pictures, a site's fixes) is one item, shown once in the pane and the Library.
+  const work = useMemo(() => groupWork(j.tasks), [j.tasks]);
+  const chatWork = work.filter((w) => w.chatIds.has(j.chatId) || w.chatIds.has(""));
+  const shown = filter === "active" ? chatWork.filter((w) => w.latest.status === "running" || Date.now() - w.activity < 6 * 3600e3).slice(0, 12) : chatWork;
+  const library: LibraryItem[] = work
+    .filter((w) => w.open)
+    .map((w) => ({ ...w.open!, title: w.title, images: w.images.length ? w.images : w.open!.images, itemKind: w.kind === "video" || w.kind === "site" ? w.kind : undefined, runs: w.runs.length }));
   const openTask = j.tasks.find((t) => t.id === j.reportId);
   // Documents open in the editor; follow-up edits share the original's file, so open the original.
   const docTask = ((): Task | undefined => {
@@ -1090,8 +1098,8 @@ export default function App() {
                 </div>
               </header>
               {shown.length === 0 && <p className="muted small">No tasks in this chat yet. When you ask for research, Codex picks it up here and you can watch each step.</p>}
-              {shown.map((t) => (
-                <TaskCard key={t.id} task={t} onOpen={j.setReportId} />
+              {shown.map((w) => (
+                <TaskCard key={w.key} task={w.latest} item={w} onOpen={j.setReportId} />
               ))}
             </aside>
           )

@@ -6,6 +6,25 @@
     <title>Jarvis</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
+    <script>
+      // The window is transparent, so a page that fails to start shows nothing at all. Write any
+      // start-up or later error to <research folder>/logs/frontend.log so it can be found.
+      (function () {
+        var send = function (line) {
+          try {
+            window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke("app_log", { name: "frontend", line: String(line).slice(0, 2000) });
+          } catch (e) {}
+        };
+        window.addEventListener("error", function (e) {
+          send("error: " + e.message + " at " + (e.filename || "") + ":" + (e.lineno || "") + (e.error && e.error.stack ? " | " + e.error.stack : ""));
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          var r = e.reason;
+          send("unhandled: " + (r && r.stack ? r.stack : r));
+        });
+        send("page loaded: " + location.href);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

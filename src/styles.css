@@ -1314,3 +1314,12 @@ button.day-stat:hover { border-color: rgba(127, 220, 255, 0.4); }
 
 /* A slide deck in the side panel. */
 .slides-view { padding: 16px 24px 24px; display: flex; flex-direction: column; gap: 12px; }
+
+/* A task card standing for several runs: what's happening now, and the earlier runs. */
+.task .run-now { margin-top: -4px; }
+.task .runs { font-size: 12px; color: var(--muted); }
+.task .runs summary { cursor: pointer; width: fit-content; }
+.task .runs ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.task .runs .run { width: 100%; text-align: left; background: none; border: 0; padding: 4px 6px; border-radius: 8px; display: flex; flex-direction: column; color: var(--fg); }
+.task .runs .run:hover { background: var(--pane); }
+.task .runs .run small { font: 11px var(--mono); color: var(--muted); }
