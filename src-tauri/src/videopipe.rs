@@ -39,9 +39,12 @@ const CORE_SKILLS: [&str; 9] = [
     "media-use",
 ];
 /// Ready-made workflows for particular kinds of video; one is added to the core set.
-const WORKFLOWS: [&str; 9] = ["product-launch-video", "faceless-explainer", "slideshow", "music-to-video", "embedded-captions", "talking-head-recut", "pr-to-video", "motion-graphics", "general-video"];
+/// ("slideshow" is left out: HyperFrames' slideshow builds a clickable deck, not a video.)
+const WORKFLOWS: [&str; 8] = ["product-launch-video", "faceless-explainer", "music-to-video", "embedded-captions", "talking-head-recut", "pr-to-video", "motion-graphics", "general-video"];
 const MAX_PLAN_ROUNDS: u32 = 3;
 const MAX_FIX_ROUNDS: u32 = 2;
+/// Rounds of: the art director watches the draft, the worker polishes, the draft is rendered again.
+const MAX_REVIEW_ROUNDS: u32 = 3;
 
 static RUNNING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 static STOPPED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
@@ -140,16 +143,22 @@ fn plan_request(title: &str, brief: &str, meta: &videokit::VideoMeta, workflow: 
     format!(
         "Stage 1 of 3: PLAN. Do not write index.html yet.\n\
          The video is called \"{title}\" ({format}, {w}x{h}, {secs} seconds; see video.json). What the person asked for:\n\"{brief}\"\n{flow}{again}\n\
+         This is a motion piece, not a slideshow: read sections 1 and 4 of know-how/video-design/SKILL.md before you plan.\n\
          Write two files in this folder:\n\
-         1. STORYBOARD.md: the goal and viewer, the design direction (palette, two fonts), then each scene with its start time, length, the one idea, the exact on-screen text, \
-            the visual, the narration line, and which assets it uses. Scenes add up to {secs} seconds. Then the full narration script if there is a voiceover.\n\
+         1. STORYBOARD.md: the goal and viewer, a `Motion: high` line (or `Motion: calm` only if the person asked for calm or minimal), the design direction (palette, two fonts) \
+            the motion language (primary transition, accents, signature move), the spine (the one element that runs through and becomes each scene) and the spectacle beat (the one exaggerated moment, with its time), then each scene with its start time, length, the one idea, what the viewer sees, the frame (how the canvas is composed; no two neighbouring scenes alike), \
+            the on-screen words if any (many scenes need none), the shot (a blueprint from know-how/hyperframes-animation/blueprints-index.md, or custom), its signature move, the camera move, the transition out, \
+            the narration line, and which assets it uses. Scene lengths follow the narration and vary; they add up to {secs} seconds. Then the full narration script if there is a voiceover.\n\
          2. requests.json: everything Jarvis must fetch or make for you before you compose, as JSON:\n\
          {{\n  \"blocks\": [\"catalog-block-name\"],\n  \"media\": [ {{\"id\": \"music\", \"type\": \"bgm|sfx|image|icon|logo\", \"intent\": \"what you need, in plain words\"}} ],\n  \"images\": [ {{\"id\": \"sheet1\", \"prompt\": \"…\", \"sheet\": true}} ],\n  \"voiceover\": {{\"text\": \"the whole narration\", \"style\": \"warm, friendly\", \"language\": \"en\"}}\n}}\n\
-         Leave out any key you don't need (a silent video has no voiceover). `blocks` are names from the HyperFrames catalog (see know-how/hyperframes-registry/SKILL.md and registry-index.json if present); \
+         Leave out any key you don't need (a silent video has no voiceover). `blocks` are names from the HyperFrames catalog (see know-how/hyperframes-registry/SKILL.md and registry-index.json if present): \
+         ask for overlays and self-contained moments (grain, light leaks, a chart, a logo outro), not for the transitions between your scenes, which you build yourself; \
+         `sfx` intents can ask for whooshes and hits for your big transitions and slams; \
          `logo` intents are a domain such as example.com; `images` are for pictures that must be made (a product, an illustration, a sheet of separate objects on a plain background to be cut out). \
          Ask only for what the storyboard really uses, and keep each intent specific. Photos, music and sound effects come from HeyGen's catalog when the person has connected it.\n\
          Speech in files the person gave you (a talking video, an interview) is transcribed by Jarvis after you finish this stage, into assets/<file>.words.json with the exact time of every word. \
-         So plan captions and highlights around that: do NOT wait for a transcript and do not ask for one in requests.json.",
+         So plan highlights and on-screen moments around that: do NOT wait for a transcript and do not ask for one in requests.json. \
+         Don't plan captions or subtitles unless the person asked for them.",
         format = meta.format,
         w = meta.width,
         h = meta.height,
@@ -157,14 +166,21 @@ fn plan_request(title: &str, brief: &str, meta: &videokit::VideoMeta, workflow: 
     )
 }
 
-/// The video must run at least as long as its narration, plus a breath at each end.
-/// Returns the (possibly longer) video and a sentence for the composer when it was stretched.
+/// The video must run at least as long as its narration, plus a breath at each end, and not much longer:
+/// a narration that ends well before the planned length would leave the last card held for many seconds,
+/// so the video is cut to the narration plus about three seconds for the call to action.
+/// Returns the (possibly changed) video and a sentence for the composer when it was changed.
 fn fit_length(dir: &Path, meta: &videokit::VideoMeta, items: &[Item]) -> (videokit::VideoMeta, String) {
     let Some(voice) = items.iter().find(|i| i.ok && i.kind == "voiceover").and_then(|i| i.duration) else { return (meta.clone(), String::new()) };
-    let need = ((voice + 1.2).ceil() as u32).min(180);
-    if need <= meta.seconds {
+    let longest = ((voice + 1.2).ceil() as u32).min(180);
+    let shortest = ((voice + 3.0).ceil() as u32).clamp(5, 180);
+    let need = if longest > meta.seconds {
+        longest
+    } else if meta.seconds > shortest + 1 {
+        shortest
+    } else {
         return (meta.clone(), String::new());
-    }
+    };
     let mut longer = meta.clone();
     longer.seconds = need;
     if let Ok(json) = serde_json::to_string_pretty(&longer) {
@@ -177,9 +193,10 @@ fn fit_length(dir: &Path, meta: &videokit::VideoMeta, items: &[Item]) -> (videok
             let _ = std::fs::write(dir.join("index.html"), html.replacen(&old, &format!("data-start=\"0\" data-duration=\"{need}\" data-width"), 1));
         }
     }
+    let (than, fit) = if need > meta.seconds { ("longer", "Stretch") } else { ("shorter", "Shrink") };
     let note = format!(
-        "The finished narration runs {voice:.1} seconds, longer than the {} seconds planned, so the video is now {need} seconds long (video.json and the root data-duration say so). \
-         Stretch the scene timings in the storyboard to fit the narration, keeping their order and proportions, and keep each scene's caption in step with the voice.",
+        "The finished narration runs {voice:.1} seconds, {than} than the {} seconds planned, so the video is now {need} seconds long (video.json and the root data-duration say so). \
+         {fit} the scene timings in the storyboard to fit the narration, keeping their order and proportions, and keep each scene's key moments in step with the voice.",
         meta.seconds
     );
     (longer, note)
@@ -192,7 +209,9 @@ fn compose_request(meta: &videokit::VideoMeta, manifest_note: &str, length_note:
          Jarvis has fetched and made the media. assets/manifest.json lists every file with its id, kind, duration and credit; use those files exactly as they are, by relative path. \
          {manifest_note} {length_note}\n\
          If a requested item failed (ok: false), design without it instead of inventing a file. Catalog blocks you asked for are installed under compositions/ (see \"blocks\" in the manifest for each one's usage snippet).\n\
-         If assets/voiceover.words.json exists, time the captions from its words. Mix any music quietly under the voice.\n\
+         If assets/voiceover.words.json exists, land each scene's key words and hits on their spoken times. Add no captions or subtitles unless the person asked for them. Mix any music quietly under the voice.\n\
+         Design every scene on its own from what it shows (section 4a of know-how/video-design/SKILL.md): never one layout refilled scene after scene. \
+         Make it move: follow section 4 (a camera in every scene, a living background, kinetic type, graphics that draw and count, real transitions). After you finish, Jarvis measures the motion and the scene layouts in your page and sends back a video that plays like a slideshow.\n\
          When you are done run ./hf lint and fix every error. Do not render.",
         w = meta.width,
         h = meta.height,
@@ -203,7 +222,360 @@ fn compose_request(meta: &videokit::VideoMeta, manifest_note: &str, length_note:
 fn fix_request(problems: &[String]) -> String {
     format!(
         "Jarvis ran HyperFrames' checker on index.html and it found these problems. Fix every one at its cause, keep the design and timing otherwise as they are, then run ./hf lint:\n{}\n\
-         Errors (marked ✗) must be fixed; ignore warnings called nested_structure_needs_subcomposition.",
+         Errors (marked ✗) must be fixed; ignore warnings called nested_structure_needs_subcomposition.\n\
+         A contrast error far below the target (around 1.2 to 1.6:1) on text whose colours look fine almost always means something is covering that text at that second \
+         (an overlay or box stretched over the frame, a transition panel, a scene that should already be hidden) or the text is caught mid-fade. \
+         Find what is on top at the time it names and fix that; recolouring the text won't help.",
+        problems.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n")
+    )
+}
+
+// ---------- the motion measure ----------
+
+/// What a tween can animate that counts as movement.
+const MOTION_PROPS: [&str; 20] = [
+    "opacity", "autoAlpha", "x", "y", "xPercent", "yPercent", "scale", "scaleX", "scaleY", "rotation", "rotationX", "rotationY", "skewX", "skewY", "clipPath", "filter",
+    "strokeDashoffset", "backgroundPosition", "color", "motionPath",
+];
+/// The expressive ones, beyond fading, sliding and scaling: what separates motion design from a slideshow.
+const RICH_PROPS: [&str; 13] = ["xPercent", "yPercent", "rotation", "rotationX", "rotationY", "skewX", "skewY", "clipPath", "filter", "strokeDashoffset", "backgroundPosition", "color", "motionPath"];
+
+#[derive(Debug, Default, PartialEq)]
+struct Motion {
+    tweens: usize,
+    /// Distinct properties the tweens animate.
+    props: Vec<String>,
+    /// Tweens that bring something in from hidden (their start state has an opacity).
+    entrances: usize,
+    /// Entrances that are only a fade and a slide (opacity with x/y): the slideshow move.
+    fade_slides: usize,
+}
+
+/// The text of the page's inline scripts.
+fn inline_scripts(html: &str) -> String {
+    let mut out = String::new();
+    let mut rest = html;
+    while let Some(open) = rest.find("<script") {
+        let after = &rest[open..];
+        let Some(tag_end) = after.find('>') else { break };
+        let body = &after[tag_end + 1..];
+        let Some(close) = body.find("</script>") else { break };
+        if !after[..tag_end].contains("src=") {
+            out.push_str(&body[..close]);
+            out.push('\n');
+        }
+        rest = &body[close..];
+    }
+    out
+}
+
+/// The argument text of a call whose "(" is at `open`: up to the matching ")", skipping strings.
+fn call_args(src: &str, open: usize) -> &str {
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut prev = ' ';
+    for (i, c) in src[open..].char_indices() {
+        match quote {
+            Some(q) => {
+                if c == q && prev != '\\' {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '"' | '\'' | '`' => quote = Some(c),
+                '(' | '{' | '[' => depth += 1,
+                ')' | '}' | ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &src[open + 1..open + i];
+                    }
+                }
+                _ => {}
+            },
+        }
+        prev = c;
+    }
+    &src[open + 1..]
+}
+
+/// Keys of the object literals in `text` (at any depth): a name or quoted name right after `{` or `,`, followed by `:`.
+fn object_keys(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut keys = vec![];
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '{' || c == ',' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            let quoted = j < chars.len() && (chars[j] == '"' || chars[j] == '\'');
+            let start = if quoted { j + 1 } else { j };
+            let mut k = start;
+            while k < chars.len() && (chars[k].is_alphanumeric() || chars[k] == '_' || chars[k] == '$') {
+                k += 1;
+            }
+            let mut end = k;
+            if quoted && end < chars.len() && (chars[end] == '"' || chars[end] == '\'') {
+                end += 1;
+            }
+            while end < chars.len() && chars[end].is_whitespace() {
+                end += 1;
+            }
+            if k > start && end < chars.len() && chars[end] == ':' {
+                keys.push(chars[start..k].iter().collect());
+            }
+        }
+        i += 1;
+    }
+    keys
+}
+
+/// The first object literal in a tween's arguments (its start state for fromTo and from).
+fn first_object(args: &str) -> &str {
+    match args.find('{') {
+        Some(open) => {
+            let inner = call_args(args, open);
+            let end = (open + 1 + inner.len() + 1).min(args.len());
+            &args[open..end]
+        }
+        None => "",
+    }
+}
+
+fn measure_motion(html: &str) -> Motion {
+    let src = inline_scripts(html);
+    let mut m = Motion::default();
+    let mut props = std::collections::BTreeSet::new();
+    for (pat, starts_hidden) in [(".fromTo(", true), (".from(", true), (".to(", false)] {
+        let mut from = 0;
+        while let Some(at) = src[from..].find(pat) {
+            let open = from + at + pat.len() - 1;
+            let args = call_args(&src, open);
+            m.tweens += 1;
+            for k in object_keys(args) {
+                if MOTION_PROPS.contains(&k.as_str()) {
+                    props.insert(k);
+                }
+            }
+            if starts_hidden {
+                let start = object_keys(first_object(args));
+                if start.iter().any(|k| k == "opacity" || k == "autoAlpha") {
+                    m.entrances += 1;
+                    if start.iter().all(|k| ["opacity", "autoAlpha", "x", "y"].contains(&k.as_str())) {
+                        m.fade_slides += 1;
+                    }
+                }
+            }
+            from = open + 1;
+        }
+    }
+    m.props = props.into_iter().collect();
+    m
+}
+
+/// A storyboard that asked for a calm video: a `Motion: calm` line, however it is formatted.
+fn is_calm(board: &str) -> bool {
+    board.lines().any(|l| {
+        let l: String = l.to_lowercase().chars().filter(|c| !matches!(c, '*' | '_' | '`')).collect();
+        let l = l.trim_start_matches(|c: char| c == '-' || c == '#' || c == '|' || c.is_whitespace());
+        l.starts_with("motion: calm") || l.starts_with("motion level: calm")
+    })
+}
+
+/// Why the composition still plays like a slideshow, in sentences for the worker. Empty when it moves enough.
+fn motion_problems(html: &str, seconds: u32, calm: bool) -> Vec<String> {
+    let m = measure_motion(html);
+    let secs = seconds.max(1) as f64;
+    let (per_second, min_props, min_rich) = if calm { (0.5, 4, 1) } else { (1.0, 6, 3) };
+    let rich = m.props.iter().filter(|p| RICH_PROPS.contains(&p.as_str())).count();
+    let mut out = vec![];
+    if (m.tweens as f64) < per_second * secs {
+        out.push(format!(
+            "There are only {} tweens for a {seconds}-second video; aim for at least {}. Give every scene a moving camera, a living background and a new beat every second or so.",
+            m.tweens,
+            (per_second * secs * if calm { 1.0 } else { 1.5 }).ceil()
+        ));
+    }
+    if m.props.len() < min_props || rich < min_rich {
+        out.push(format!(
+            "The timeline only animates {}. Use at least {min_props} different properties, {min_rich} or more of them beyond fades, slides and scale: rotation and skew on kinetic type, \
+             clipPath and mask reveals (yPercent in an overflow-hidden wrapper), strokeDashoffset for lines that draw, filter for blur snaps.",
+            if m.props.is_empty() { "nothing".to_string() } else { m.props.join(", ") }
+        ));
+    }
+    if !calm && m.entrances >= 4 && m.fade_slides * 10 > m.entrances * 5 {
+        out.push(format!(
+            "{} of the {} entrances are the same fade-and-slide (opacity with x or y). Keep at most half that way; land the rest with slams (scale), mask rises (yPercent in an overflow-hidden wrapper), skews, clip-path wipes and letter cascades.",
+            m.fade_slides, m.entrances
+        ));
+    }
+    out
+}
+
+/// The page without the contents of its `<script>` and `<style>` blocks, so only markup is left.
+fn markup_only(html: &str) -> String {
+    let mut out = html.to_string();
+    for tag in ["script", "style"] {
+        let mut kept = String::with_capacity(out.len());
+        let mut rest = out.as_str();
+        while let Some(open) = rest.to_ascii_lowercase().find(&format!("<{tag}")) {
+            kept.push_str(&rest[..open]);
+            let close = format!("</{tag}>");
+            match rest[open..].to_ascii_lowercase().find(&close) {
+                Some(c) => rest = &rest[open + c + close.len()..],
+                None => {
+                    rest = "";
+                    break;
+                }
+            }
+        }
+        kept.push_str(rest);
+        out = kept;
+    }
+    out
+}
+
+/// Each opening tag in markup: (byte offset just past it, tag name, class attribute).
+fn open_tags(markup: &str) -> Vec<(usize, usize, String, String)> {
+    let mut out = vec![];
+    let bytes = markup.as_bytes();
+    let mut i = 0;
+    while let Some(lt) = markup[i..].find('<') {
+        let start = i + lt;
+        let Some(gt) = markup[start..].find('>') else { break };
+        let end = start + gt + 1;
+        let tag = &markup[start + 1..end - 1];
+        let name: String = tag.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').collect::<String>().to_ascii_lowercase();
+        if !name.is_empty() && bytes.get(start + 1).is_some_and(|b| b.is_ascii_alphabetic()) {
+            let class = ["class=\"", "class='"]
+                .iter()
+                .find_map(|p| tag.find(p).map(|at| (at + p.len(), p.chars().last().unwrap_or('"'))))
+                .and_then(|(from, q)| tag[from..].find(q).map(|len| tag[from..from + len].to_string()))
+                .unwrap_or_default();
+            out.push((start, end, name, class));
+        }
+        i = end;
+    }
+    out
+}
+
+/// Each scene's structure: the tag and first class of the first four elements inside it. A scene is a
+/// clip that is a `<section>` or has the class `scene`.
+fn scene_signatures(html: &str) -> Vec<String> {
+    let markup = markup_only(html);
+    let tags = open_tags(&markup);
+    let mut out = vec![];
+    for (n, (_, end, name, class)) in tags.iter().enumerate() {
+        let classes: Vec<&str> = class.split_whitespace().collect();
+        if !classes.contains(&"clip") || !(name == "section" || classes.contains(&"scene")) {
+            continue;
+        }
+        // Where this element closes: count same-named tags opening and closing after it.
+        let mut depth = 1;
+        let mut close = markup.len();
+        let mut at = *end;
+        while let Some(lt) = markup[at..].find('<') {
+            let p = at + lt;
+            let rest = markup[p + 1..].to_ascii_lowercase();
+            if rest.starts_with(&format!("/{name}")) {
+                depth -= 1;
+                if depth == 0 {
+                    close = p;
+                    break;
+                }
+            } else if rest.starts_with(name.as_str()) && rest[name.len()..].starts_with(|c: char| c == ' ' || c == '>') {
+                depth += 1;
+            }
+            at = p + 1;
+        }
+        // Repeated neighbours (a row of decorative dots) count once, so a shared backdrop isn't the whole signature.
+        let mut inside: Vec<String> = vec![];
+        for (_, _, tag, class) in tags[n + 1..].iter().take_while(|(start, ..)| *start < close) {
+            let step = match class.split_whitespace().next() {
+                Some(c) => format!("{tag}.{c}"),
+                None => tag.clone(),
+            };
+            if inside.last() != Some(&step) {
+                inside.push(step);
+            }
+            if inside.len() == 6 {
+                break;
+            }
+        }
+        out.push(inside.join(" > "));
+    }
+    out
+}
+
+/// Words glued to a span in the markup ("Pick<span>one" shows as "Pickone"), as the words that run together.
+fn glued_words(html: &str) -> Vec<String> {
+    let m = markup_only(html);
+    let b = m.as_bytes();
+    let word = |c: u8| c.is_ascii_alphanumeric();
+    let before = |i: usize| -> String { m[..i].chars().rev().take_while(|c| c.is_alphanumeric()).collect::<Vec<_>>().into_iter().rev().collect() };
+    let after = |i: usize| -> String { m[i..].chars().take_while(|c| c.is_alphanumeric()).collect() };
+    let mut out: Vec<String> = vec![];
+    for (i, _) in m.match_indices("<span") {
+        let Some(gt) = m[i..].find('>') else { continue };
+        let inner = i + gt + 1;
+        if i > 0 && word(b[i - 1]) && inner < b.len() && word(b[inner]) {
+            out.push(format!("{}{}", before(i), after(inner)));
+        }
+    }
+    for (i, _) in m.match_indices("</span>") {
+        let next = i + "</span>".len();
+        if i > 0 && word(b[i - 1]) && next < b.len() && word(b[next]) {
+            out.push(format!("{}{}", before(i), after(next)));
+        }
+    }
+    out.dedup();
+    out.truncate(4);
+    out
+}
+
+/// Scenes built by refilling one layout, and words glued together, in sentences for the worker. Empty when all is well.
+fn layout_problems(html: &str) -> Vec<String> {
+    let glued = glued_words(html);
+    let mut out = if glued.is_empty() {
+        vec![]
+    } else {
+        vec![format!(
+            "Words are glued together where a span meets text, so they show without a space: {}. Keep a space outside each word span (Pick <span>one real task</span> this week) or give the spans a right margin.",
+            glued.iter().map(|g| format!("\"{g}\"")).collect::<Vec<_>>().join(", ")
+        )]
+    };
+    out.extend(same_layout_problems(html));
+    out
+}
+
+fn same_layout_problems(html: &str) -> Vec<String> {
+    let sigs = scene_signatures(html);
+    if sigs.len() < 4 {
+        return vec![];
+    }
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for s in sigs.iter().filter(|s| !s.is_empty()) {
+        *counts.entry(s.as_str()).or_default() += 1;
+    }
+    match counts.into_iter().max_by_key(|(_, n)| *n) {
+        Some((sig, n)) if n * 2 > sigs.len() => vec![format!(
+            "{n} of the {} scenes are built from the same layout ({sig}): one design refilled with new words, which is what makes it look like slides. \
+             Design each scene on its own from what it shows (section 4a): a different frame every time, words only where they earn it, no eyebrow-headline-subline block repeated.",
+            sigs.len()
+        )],
+        _ => vec![],
+    }
+}
+
+fn rework_request(problems: &[String]) -> String {
+    format!(
+        "Jarvis looked at index.html and it still plays like a slideshow:\n{}\n\
+         Rework it following sections 4 and 4a of know-how/video-design/SKILL.md (know-how/video-design/references/video-skeleton.html has working code for each technique): \
+         every scene designed on its own with a different frame, a camera that moves in every scene, varied entrances, lines that draw and numbers that count where they fit, \
+         and real transitions where the outgoing and incoming scenes move together. You may rebuild scenes from scratch. \
+         Keep the storyboard's ideas, scene order, the timing against the voiceover and the media as they are. Then run ./hf lint and fix every error.",
         problems.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n")
     )
 }
@@ -376,6 +748,56 @@ async fn generate_image(app: &AppHandle, dir: &Path, meta: &videokit::VideoMeta,
     }
 }
 
+/// A Kokoro voice for the requested delivery: a male voice when the style asks for one, a warm female voice otherwise.
+fn kokoro_voice(style: &str) -> &'static str {
+    let s = style.to_lowercase();
+    if s.split(|c: char| !c.is_alphanumeric()).any(|w| w == "male" || w == "man" || w == "masculine") {
+        "am_michael"
+    } else {
+        "af_heart"
+    }
+}
+
+/// Why the audio engine made no voice: the reason it lists for the omitted line ("TTS failed — omitted (…)"), or
+/// the last thing it printed.
+fn engine_failure(stdout: &str, stderr: &str) -> String {
+    let all = format!("{stdout}\n{stderr}");
+    if let Some(line) = all.lines().find(|l| l.contains("omitted")) {
+        let why = line.split_once("omitted (").map(|(_, r)| r.trim_end_matches(')')).unwrap_or(line.trim());
+        // A JSON error from the provider: keep its message.
+        let why = why.split("\"message\":\"").nth(1).and_then(|m| m.split('"').next()).unwrap_or(why);
+        return tasks::truncate(why.trim(), 160);
+    }
+    tasks::truncate(stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no voice came back").trim(), 160)
+}
+
+/// Run HyperFrames' audio engine for one request. Returns the voice file (relative to `dir`), its length and its
+/// metadata, or why it wasn't made.
+async fn run_audio_engine(rt: &Runtime, dir: &Path, engine: &Path, request: &Value, gemini_key: Option<&str>) -> Result<(String, f64, Value), String> {
+    let _ = std::fs::write(dir.join("audio_request.json"), request.to_string());
+    let _ = std::fs::remove_file(dir.join("audio_meta.json"));
+    let mut cmd = Command::new(rt.node_path());
+    cmd.arg(engine).args(["--request", "audio_request.json", "--out", "audio_meta.json"]).current_dir(dir).env_clear().envs(rt.env_pairs());
+    if let Some(key) = gemini_key {
+        cmd.env("GEMINI_API_KEY", key);
+    }
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    // Kokoro may fetch its model the first time it speaks.
+    let out = match tokio::time::timeout(Duration::from_secs(600), cmd.output()).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return Err(format!("the audio engine didn't start: {e}")),
+        Err(_) => return Err("it took too long".into()),
+    };
+    let _ = std::fs::remove_file(dir.join("audio_request.json"));
+    let meta: Value = std::fs::read_to_string(dir.join("audio_meta.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
+    let _ = std::fs::remove_file(dir.join("audio_meta.json"));
+    let voice = meta["voices"][0].clone();
+    match (voice["path"].as_str(), voice["duration_s"].as_f64()) {
+        (Some(path), Some(secs)) => Ok((path.to_string(), secs, voice)),
+        _ => Err(engine_failure(&String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr))),
+    }
+}
+
 async fn make_voiceover(app: &AppHandle, rt: &Runtime, dir: &Path, v: &VoiceRequest) -> Item {
     let mut item = Item { id: "voiceover".into(), kind: "voiceover".into(), ..Default::default() };
     let settings = settings::load(app);
@@ -395,56 +817,65 @@ async fn make_voiceover(app: &AppHandle, rt: &Runtime, dir: &Path, v: &VoiceRequ
             item.file = to;
             item.duration = Some(secs);
             item.credit = "ElevenLabs speech".into();
-            item.note = "Word timings for captions are in assets/voiceover.words.json.".into();
+            item.note = "Word timings are in assets/voiceover.words.json.".into();
             return item;
         }
-        Some(Err(e)) if settings.gemini_api_key.trim().is_empty() => {
-            item.note = e;
-            return item;
-        }
-        Some(Err(e)) => fell_back = format!("{e} Gemini's voice was used instead. "),
+        Some(Err(e)) => fell_back = format!("{e} Another voice was used instead. "),
         None => {}
-    }
-    let key = settings.gemini_api_key;
-    if key.trim().is_empty() {
-        item.note = "No voice is set up (no Gemini key and no ElevenLabs key), so there is no voiceover.".into();
-        return item;
     }
     let engine = rt.skills().join("media-use/audio/scripts/audio.mjs");
     if !engine.is_file() {
         item.note = "The audio engine isn't unpacked.".into();
         return item;
     }
-    let request = json!({
-        "provider": "gemini",
-        "voice": if !v.voice.trim().is_empty() { v.voice.trim() } else if settings.narration_gemini_voice.trim().is_empty() { "Kore" } else { settings.narration_gemini_voice.trim() },
-        "lang": if v.language.trim().is_empty() { "en" } else { v.language.trim() },
-        "style": if v.style.trim().is_empty() { "warm, clear, unhurried" } else { v.style.trim() },
-        "lines": [{ "id": "vo", "text": v.text.trim() }],
-        "bgm": { "mode": "none" }
-    });
-    let _ = std::fs::write(dir.join("audio_request.json"), request.to_string());
-    let mut cmd = Command::new(rt.node_path());
-    cmd.arg(&engine).args(["--request", "audio_request.json", "--out", "audio_meta.json"]).current_dir(dir).env_clear().envs(rt.env_pairs()).env("GEMINI_API_KEY", key.trim()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-    let out = match tokio::time::timeout(Duration::from_secs(180), cmd.output()).await {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => {
-            item.note = format!("The audio engine didn't start: {e}");
-            return item;
+    let key = settings.gemini_api_key.trim().to_string();
+    let lang = if v.language.trim().is_empty() { "en" } else { v.language.trim() };
+    let style = if v.style.trim().is_empty() { "warm, clear, unhurried" } else { v.style.trim() };
+    // Gemini's voice first, then Gemini's lite voice (a separate daily quota), then HyperFrames' local Kokoro
+    // voice when there is no key or Gemini can't speak (quota, outage). (provider, voice, TTS model)
+    let mut attempts: Vec<(&str, String, Option<&str>)> = vec![];
+    if !key.is_empty() {
+        let voice = if !v.voice.trim().is_empty() { v.voice.trim() } else if settings.narration_gemini_voice.trim().is_empty() { "Kore" } else { settings.narration_gemini_voice.trim() };
+        attempts.push(("gemini", voice.to_string(), None));
+        attempts.push(("gemini", voice.to_string(), Some("gemini-3.8-flash-lite-tts")));
+    }
+    if lang.starts_with("en") {
+        attempts.push(("kokoro", kokoro_voice(style).to_string(), None));
+    }
+    if attempts.is_empty() {
+        item.note = "No voice is set up (no Gemini key and no ElevenLabs key), so there is no voiceover.".into();
+        return item;
+    }
+    let mut failures: Vec<String> = vec![];
+    let mut made: Option<(String, f64, Value, &str)> = None;
+    for (provider, voice, model) in &attempts {
+        let mut request = json!({
+            "provider": provider,
+            "voice": voice,
+            "lang": lang,
+            "style": style,
+            "lines": [{ "id": "vo", "text": v.text.trim() }],
+            "bgm": { "mode": "none" }
+        });
+        if let Some(model) = model {
+            request["tts_model"] = json!(model);
         }
-        Err(_) => {
-            item.note = "The voiceover took too long.".into();
-            return item;
+        match run_audio_engine(rt, dir, &engine, &request, (*provider == "gemini").then_some(key.as_str())).await {
+            Ok((path, secs, voice)) => {
+                made = Some((path, secs, voice, provider));
+                break;
+            }
+            Err(e) => failures.push(format!("{}: {e}", model.unwrap_or(provider))),
         }
-    };
-    let _ = std::fs::remove_file(dir.join("audio_request.json"));
-    let meta: Value = std::fs::read_to_string(dir.join("audio_meta.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
-    let _ = std::fs::remove_file(dir.join("audio_meta.json"));
-    let voice = &meta["voices"][0];
-    let (Some(path), Some(secs)) = (voice["path"].as_str(), voice["duration_s"].as_f64()) else {
-        item.note = format!("The voiceover wasn't made: {}", tasks::truncate(&String::from_utf8_lossy(&out.stderr), 160));
+    }
+    let Some((path, secs, voice, provider)) = made else {
+        item.note = format!("The voiceover wasn't made ({}).", failures.join("; "));
         return item;
     };
+    if provider == "kokoro" && !key.is_empty() {
+        fell_back.push_str(&format!("Gemini's voice wasn't available ({}), so the local Kokoro voice was used. ", failures.join("; ")));
+    }
+    let path = path.as_str();
     let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("wav");
     let to = format!("assets/voiceover.{ext}");
     if std::fs::copy(dir.join(path), dir.join(&to)).is_err() {
@@ -463,8 +894,8 @@ async fn make_voiceover(app: &AppHandle, rt: &Runtime, dir: &Path, v: &VoiceRequ
     item.ok = true;
     item.file = to;
     item.duration = Some(secs);
-    item.credit = "Gemini speech".into();
-    item.note = format!("{fell_back}Word timings for captions are in assets/voiceover.words.json.");
+    item.credit = if provider == "kokoro" { "Kokoro speech (local)".into() } else { "Gemini speech".into() };
+    item.note = format!("{fell_back}Word timings are in assets/voiceover.words.json.");
     item
 }
 
@@ -681,57 +1112,152 @@ async fn produce(app: &AppHandle, rt: &Runtime, dir: &Path, spec: &Spec) -> Resu
     // 4. Compose.
     stage(app, folder, "compose", "Building the video…", Value::Null);
     run_stage(app, folder, &format!("Compose: {}", spec.title), compose_request(&meta, &manifest_note(&items), &length_note), &spec.workflow, &spec.chat).await?;
-    checked_draft(app, rt, dir, folder, &spec.workflow, &spec.chat).await
+
+    // 4b. A composition that plays like a slideshow (too little motion, or one layout refilled) goes back once.
+    let calm = std::fs::read_to_string(dir.join("STORYBOARD.md")).map(|b| is_calm(&b)).unwrap_or(false);
+    let problems = std::fs::read_to_string(dir.join("index.html"))
+        .map(|h| [motion_problems(&h, meta.seconds, calm), layout_problems(&h)].concat())
+        .unwrap_or_default();
+    if !problems.is_empty() && !stopped(folder) {
+        stage(app, folder, "fix", "The video still looks like slides. Reworking it…", json!({ "problems": problems }));
+        // A worker that stumbles here still leaves a video; the checker below catches anything it broke.
+        if let Err(e) = run_stage(app, folder, "Rework the design", rework_request(&problems), &spec.workflow, &spec.chat).await {
+            if stopped(folder) {
+                return Err(e);
+            }
+        }
+    }
+    let gaps = media_gaps(&items);
+    checked_draft(app, rt, dir, folder, &spec.workflow, &spec.chat).await.map(|note| format!("{note}{gaps}"))
 }
 
-/// Check the video, have the worker fix what the checker finds, then render a draft.
-async fn checked_draft(app: &AppHandle, rt: &Runtime, dir: &Path, folder: &str, workflow: &str, chat: &str) -> Result<String, String> {
+/// What the person should know is missing from the finished video: a voiceover or music that couldn't be made.
+fn media_gaps(items: &[Item]) -> String {
+    let mut out = String::new();
+    if let Some(v) = items.iter().find(|i| i.kind == "voiceover" && !i.ok) {
+        out.push_str(&format!(" It has no voiceover: {}", tasks::truncate(v.note.trim(), 220)));
+        if !out.ends_with('.') {
+            out.push('.');
+        }
+    }
+    if items.iter().any(|i| i.kind == "bgm" && !i.ok) && !items.iter().any(|i| i.kind == "bgm" && i.ok) {
+        out.push_str(" It has no music: none could be found for it (music comes from HeyGen's catalog, so connect HeyGen in Set up if it isn't).");
+    }
+    out
+}
+
+/// Run HyperFrames' checker and have the worker fix what it finds, up to MAX_FIX_ROUNDS times. Returns the last report.
+async fn check_and_fix(app: &AppHandle, rt: &Runtime, dir: &Path, folder: &str, workflow: &str, chat: &str, first: &str) -> Result<videokit::CheckReport, String> {
     let mut last = videokit::CheckReport { ok: false, problems: vec![], text: String::new() };
     for round in 0..=MAX_FIX_ROUNDS {
-        stage(app, folder, "check", if round == 0 { "Checking the video…".to_string() } else { "Checking the fixes…".to_string() }, Value::Null);
+        stage(app, folder, "check", if round == 0 { first.to_string() } else { "Checking the fixes…".to_string() }, Value::Null);
         last = videokit::check_project_public(rt, dir).await?;
-        if last.ok {
-            break;
-        }
-        if round == MAX_FIX_ROUNDS || stopped(folder) {
+        if last.ok || round == MAX_FIX_ROUNDS || stopped(folder) {
             break;
         }
         stage(app, folder, "fix", format!("Fixing {} problem{}…", last.problems.len().max(1), if last.problems.len() == 1 { "" } else { "s" }), json!({ "problems": last.problems }));
         let problems = if last.problems.is_empty() { vec![tasks::truncate(&last.text, 400)] } else { last.problems.clone() };
         run_stage(app, folder, "Fix the video", fix_request(&problems), workflow, chat).await?;
     }
+    Ok(last)
+}
+
+/// Put frames of the draft in .review/ (named by their time) for the worker to look at. Returns how many.
+async fn leave_review_frames(rt: &Runtime, dir: &Path) -> usize {
+    let secs = std::fs::read_to_string(dir.join("video.json")).ok().and_then(|t| serde_json::from_str::<videokit::VideoMeta>(&t).ok()).map(|m| m.seconds as f64).unwrap_or(0.0);
+    if secs <= 0.0 {
+        return 0;
+    }
+    let review = dir.join(".review");
+    let _ = std::fs::remove_dir_all(&review);
+    let _ = std::fs::create_dir_all(&review);
+    let frames = crate::videoreview::frames(&rt.ffmpeg(), &dir.join("renders/draft.mp4"), secs, &std::env::temp_dir().join(format!("jarvis-shots-{}", std::process::id()))).await;
+    frames.iter().filter(|f| std::fs::write(review.join(format!("at-{:05.1}s.jpg", f.at)), &f.jpeg).is_ok()).count()
+}
+
+fn polish_request(problems: &[String], frames: usize) -> String {
+    let look = if frames > 0 {
+        format!("The {frames} frames the art director looked at are attached to this message (and are in .review/, named by their second): look at them before you change anything, and check each fix against the frame it is about. ")
+    } else {
+        String::new()
+    };
+    format!(
+        "Jarvis rendered a draft, watched it and looked at its frames. The art director found these problems:\n{}\n{look}\
+         Fix each at its cause in index.html. You may re-stage or redesign a scene (bring the camera in close, make the subject fill the frame, make things happen in a still stretch) \
+         as long as its idea, its words and its timing against the voiceover stay; never drop content. Follow know-how/video-design/SKILL.md. Keep everything else as it is, then run ./hf lint.",
+        problems.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n")
+    )
+}
+
+/// Check the video, have the worker fix what the checker finds, then render a draft. Then the art director
+/// watches the draft (still and blank stretches, and its frames), and the worker polishes what was found,
+/// up to MAX_REVIEW_ROUNDS times. A polish that can't be made to pass the checker is undone.
+async fn checked_draft(app: &AppHandle, rt: &Runtime, dir: &Path, folder: &str, workflow: &str, chat: &str) -> Result<String, String> {
+    let last = check_and_fix(app, rt, dir, folder, workflow, chat, "Checking the video…").await?;
     if !last.ok {
         let why = last.problems.first().cloned().unwrap_or_else(|| "the checker could not run it".into());
         return Err(format!("The video still has a problem Jarvis couldn't fix: {why}"));
     }
     let mut done = render_draft(app, rt, dir, folder).await?;
-    // A second look at the real frames; one round of fixes if the art director finds something.
-    let mut review_note = String::new();
-    if !stopped(folder) {
-        match visual_review(app, rt, dir, folder).await {
-            Ok(problems) if !problems.is_empty() => {
-                stage(app, folder, "fix", format!("The art director found {} thing{} to fix…", problems.len(), if problems.len() == 1 { "" } else { "s" }), json!({ "problems": problems }));
-                let request = format!(
-                    "Jarvis rendered a draft and looked at its frames. The art director found these layout problems:\n{}\n\
-                     Fix each at its cause in index.html (move, resize or retime the element, never delete the content), keep everything else as it is, then run ./hf lint.",
-                    problems.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n")
-                );
-                if run_stage(app, folder, "Polish the video", request, workflow, chat).await.is_ok() {
-                    stage(app, folder, "check", "Checking the polish…", Value::Null);
-                    if videokit::check_project_public(rt, dir).await.map(|r| r.ok).unwrap_or(false) {
-                        done = render_draft(app, rt, dir, folder).await?;
-                        review_note = format!(" The art director's {} note{} {} applied.", problems.len(), if problems.len() == 1 { "" } else { "s" }, if problems.len() == 1 { "was" } else { "were" });
-                    } else {
-                        review_note = " The art director's fixes didn't pass the checker, so the first draft was kept.".into();
-                        let _ = std::fs::write(dir.join("review-notes.md"), format!("# Left unfixed\n\n{}\n", problems.join("\n")));
-                    }
-                }
-            }
-            Ok(_) => review_note = " The art director found nothing to fix.".into(),
-            Err(_) => {}
+    let (mut applied, mut left): (usize, Vec<String>) = (0, vec![]);
+    let mut reviewed = false;
+    // Why the art director couldn't look at the frames, if it couldn't (the automatic checks still ran).
+    let mut eyes_closed: Option<String> = None;
+    // Whether it looked at least once.
+    let mut looked = false;
+    for _ in 0..MAX_REVIEW_ROUNDS {
+        if stopped(folder) {
+            break;
         }
+        let Ok((problems, unseen)) = visual_review(app, rt, dir, folder).await else { break };
+        match unseen {
+            Some(why) => {
+                eyes_closed.get_or_insert(why);
+            }
+            None => looked = true,
+        }
+        reviewed = true;
+        left = problems.clone();
+        if problems.is_empty() {
+            break;
+        }
+        stage(app, folder, "fix", format!("The art director found {} thing{} to fix…", problems.len(), if problems.len() == 1 { "" } else { "s" }), json!({ "problems": problems }));
+        let passing = std::fs::read(dir.join("index.html")).ok();
+        let shown = leave_review_frames(rt, dir).await;
+        let polished = run_stage(app, folder, "Polish the video", polish_request(&problems, shown), workflow, chat).await;
+        let _ = std::fs::remove_dir_all(dir.join(".review"));
+        if let Err(e) = polished {
+            if stopped(folder) {
+                return Err(e);
+            }
+            break;
+        }
+        let report = check_and_fix(app, rt, dir, folder, workflow, chat, "Checking the polish…").await?;
+        if !report.ok {
+            // Back to the version that passed, which is the draft already rendered.
+            if let Some(page) = passing {
+                let _ = std::fs::write(dir.join("index.html"), page);
+            }
+            break;
+        }
+        done = render_draft(app, rt, dir, folder).await?;
+        applied += problems.len();
+        left.clear();
     }
-    Ok(format!("The draft is ready ({} KB, rendered in {}s).{review_note}", done.size / 1024, done.seconds_taken))
+    if !left.is_empty() {
+        let _ = std::fs::write(dir.join("review-notes.md"), format!("# Left unfixed\n\n{}\n", left.join("\n")));
+    } else {
+        let _ = std::fs::remove_file(dir.join("review-notes.md"));
+    }
+    let review_note = match (reviewed, applied, left.len()) {
+        (false, ..) => String::new(),
+        (true, 0, 0) if !looked => " The automatic checks found nothing to fix.".into(),
+        (true, 0, 0) => " The art director found nothing to fix.".into(),
+        (true, a, 0) => format!(" The art director's {a} note{} {} applied.", if a == 1 { "" } else { "s" }, if a == 1 { "was" } else { "were" }),
+        (true, _, l) => format!(" {l} of the art director's notes couldn't be applied; they are in review-notes.md."),
+    };
+    let eyes_note = eyes_closed.filter(|_| !looked).map(|why| format!(" The art director couldn't look at the frames ({}), so only the automatic checks ran.", tasks::truncate(&why, 120))).unwrap_or_default();
+    Ok(format!("The draft is ready ({} KB, rendered in {}s).{review_note}{eyes_note}", done.size / 1024, done.seconds_taken))
 }
 
 async fn render_draft(app: &AppHandle, rt: &Runtime, dir: &Path, folder: &str) -> Result<videokit::RenderDone, String> {
@@ -755,16 +1281,31 @@ async fn render_draft(app: &AppHandle, rt: &Runtime, dir: &Path, folder: &str) -
     }
 }
 
-/// Look at the draft's frames. Quietly does nothing without a Gemini key or if the look fails.
-async fn visual_review(app: &AppHandle, rt: &Runtime, dir: &Path, folder: &str) -> Result<Vec<String>, String> {
-    let key = settings::load(app).gemini_api_key;
-    if key.trim().is_empty() {
-        return Err("no key".into());
-    }
+/// Watch the draft for blank and still stretches and text off the frame (always), and show its frames to Gemini
+/// (with a key). Returns what was found and, when Gemini couldn't look, why.
+async fn visual_review(app: &AppHandle, rt: &Runtime, dir: &Path, folder: &str) -> Result<(Vec<String>, Option<String>), String> {
     stage(app, folder, "check", "The art director is looking at the draft…", Value::Null);
     let meta = videokit::video_info(app.clone(), folder.to_string()).map(|i| i.meta).map_err(|e| e.to_string())?;
-    let frames = crate::videoreview::frames(&rt.ffmpeg(), &dir.join("renders/draft.mp4"), meta.seconds as f64, &std::env::temp_dir().join(format!("jarvis-review-{}", std::process::id()))).await;
-    crate::videoreview::review(crate::videoreview::gemini_base(), key.trim(), &meta.title, &frames).await
+    let video = dir.join("renders/draft.mp4");
+    let secs = meta.seconds as f64;
+    let calm = std::fs::read_to_string(dir.join("STORYBOARD.md")).map(|b| is_calm(&b)).unwrap_or(false);
+    let mut problems = crate::videoreview::blank_problems(&crate::videoreview::blanks(&rt.ffmpeg(), &video).await);
+    problems.extend(videokit::offcanvas_problems(rt, dir, meta.seconds).await);
+    if !calm {
+        problems.extend(crate::videoreview::still_problems(&crate::videoreview::stills(&rt.ffmpeg(), &video, secs).await, secs));
+    }
+    let key = settings::load(app).gemini_api_key;
+    if key.trim().is_empty() {
+        return Ok((problems, Some("there is no Gemini key".into())));
+    }
+    let frames = crate::videoreview::frames(&rt.ffmpeg(), &video, secs, &std::env::temp_dir().join(format!("jarvis-review-{}", std::process::id()))).await;
+    match crate::videoreview::review(crate::videoreview::gemini_base(), key.trim(), &meta.title, &frames).await {
+        Ok(found) => {
+            problems.extend(found);
+            Ok((problems, None))
+        }
+        Err(e) => Ok((problems, Some(e))),
+    }
 }
 
 /// Change a finished video: the worker edits it, the checker looks, and a new draft is rendered.
@@ -988,14 +1529,24 @@ mod tests {
         assert!(std::fs::read_to_string(dir.join("index.html")).unwrap().contains("data-duration=\"24\""));
         assert!(std::fs::read_to_string(dir.join("video.json")).unwrap().contains("\"seconds\": 24"));
         assert_eq!(fit_length(&dir, &meta, &[voice(400.0)]).0.seconds, 180, "never longer than three minutes");
+        // A narration that ends long before the planned length: the video is cut to fit, with time for the ending.
+        std::fs::write(dir.join("index.html"), "<div id=\"root\" data-composition-id=\"main\" data-start=\"0\" data-duration=\"60\" data-width=\"1920\">").unwrap();
+        let sixty = videokit::VideoMeta { seconds: 60, ..meta.clone() };
+        let (shorter, note) = fit_length(&dir, &sixty, &[voice(49.6)]);
+        assert_eq!(shorter.seconds, 53, "49.6s of speech and three seconds to read the ending");
+        assert!(note.contains("shorter than the 60 seconds") && note.contains("Shrink"));
+        assert!(std::fs::read_to_string(dir.join("index.html")).unwrap().contains("data-duration=\"53\""));
+        assert_eq!(fit_length(&dir, &sixty, &[voice(55.0)]).0.seconds, 58, "more than a second to spare is trimmed too");
+        assert_eq!(fit_length(&dir, &sixty, &[voice(56.5)]).0.seconds, 60, "a second to spare is left alone");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn the_worker_gets_the_core_skills_and_the_workflow_that_fits() {
-        let s = skills_for("slideshow");
+        let s = skills_for("music-to-video");
         assert_eq!(s[0], "video-design");
-        assert!(s.contains(&"media-use".to_string()) && s.contains(&"hyperframes-registry".to_string()) && s.last().unwrap() == "slideshow");
+        assert!(s.contains(&"media-use".to_string()) && s.contains(&"hyperframes-registry".to_string()) && s.last().unwrap() == "music-to-video");
+        assert_eq!(skills_for("slideshow").len(), CORE_SKILLS.len(), "a deck isn't a video");
         assert_eq!(skills_for("rm -rf").len(), CORE_SKILLS.len(), "an unknown workflow adds nothing");
         let meta = videokit::VideoMeta { title: "t".into(), format: "portrait".into(), width: 1080, height: 1920, seconds: 30 };
         let plan = plan_request("Bakery reel", "A reel for a bakery", &meta, "product-launch-video", "");
@@ -1005,5 +1556,148 @@ mod tests {
         let compose = compose_request(&meta, "All 3 items are ready.", "");
         assert!(compose.contains("COMPOSE") && compose.contains("assets/manifest.json") && compose.contains("./hf lint") && compose.contains("Do not render"));
         assert!(fix_request(&["✗ gsap_x: bad".into()]).contains("- ✗ gsap_x: bad"));
+        assert!(plan.contains("Motion: high") && plan.contains("blueprints-index.md"));
+        assert!(compose.contains("measures the motion"));
+    }
+
+    /// A composition in the old style: every element fades up into place, scene after scene.
+    fn slideshow(scenes: usize) -> String {
+        let tweens: String = (0..scenes)
+            .map(|i| {
+                let at = i as f64 * 6.0;
+                format!(
+                    "tl.fromTo(\"#s{i}-kicker\", {{ opacity: 0, y: 24 }}, {{ opacity: 1, y: 0, duration: 0.6, ease: \"power2.out\" }}, {at});\n\
+                     tl.fromTo(\"#s{i}-title\", {{ opacity: 0, y: 60 }}, {{ opacity: 1, y: 0, duration: 0.9 }}, {});\n\
+                     tl.to(\"#s{i}-title\", {{ scale: 1.04, duration: 4, ease: \"none\" }}, {at});\n",
+                    at + 0.3
+                )
+            })
+            .collect();
+        format!("<html><head><script src=\"vendor/gsap.min.js\"></script></head><body><div id=\"root\"></div><script>const tl = gsap.timeline({{ paused: true }});\n{tweens}window.__timelines[\"main\"] = tl;</script></body></html>")
+    }
+
+    #[test]
+    fn the_skeleton_moves_enough_and_a_slideshow_does_not() {
+        let skeleton = include_str!("../skills/video-design/references/video-skeleton.html");
+        assert_eq!(motion_problems(skeleton, 12, false), Vec::<String>::new(), "the skeleton is the example the worker copies: {:?}", measure_motion(skeleton));
+        let m = measure_motion(skeleton);
+        assert!(m.props.iter().any(|p| p == "strokeDashoffset") && m.props.iter().any(|p| p == "clipPath") && m.props.iter().any(|p| p == "skewX"), "{:?}", m.props);
+
+        let slides = slideshow(10);
+        let m = measure_motion(&slides);
+        assert_eq!((m.tweens, m.entrances, m.fade_slides), (30, 20, 20));
+        assert_eq!(m.props, vec!["opacity", "scale", "y"]);
+        let problems = motion_problems(&slides, 60, false);
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(problems[0].contains("only 30 tweens") && problems[1].contains("opacity, scale, y") && problems[2].contains("20 of the 20 entrances"));
+        assert!(rework_request(&problems).contains("- There are only 30 tweens"));
+
+        // Many plain properties (bars scaling, a nudge sideways) don't make up for nothing expressive.
+        let busy = slides.replace("window.__timelines", "tl.fromTo(\"#bar\", { scaleX: 0, scaleY: 0, x: 0, rotation: 0 }, { scaleX: 1, scaleY: 1, x: 3, rotation: 2 }, 1);\nwindow.__timelines");
+        assert_eq!(measure_motion(&busy).props.len(), 7);
+        assert!(motion_problems(&busy, 60, false).iter().any(|p| p.contains("3 or more of them beyond fades")));
+
+        // Calm videos are held to a gentler measure and may fade.
+        assert_eq!(motion_problems(&slides, 60, true).len(), 1, "calm still needs more than three properties");
+    }
+
+    #[test]
+    fn the_motion_measure_reads_only_tweens_in_inline_scripts() {
+        assert_eq!(object_keys("{ opacity: 0, 'y': 4, \"clipPath\": \"inset(0)\", keyframes: [{ x: 1 }] }"), vec!["opacity", "y", "clipPath", "keyframes", "x"]);
+        assert!(object_keys("{ v: on ? a : b }").iter().all(|k| k == "v"), "a ternary's branches aren't keys");
+        let html = "<script src=\"a.js\">tl.to(\"#a\", { rotation: 4 })</script><script>tl.to(\"#b\", { skewX: 4, onUpdate: () => f({ x: 1 }) });</script>";
+        let m = measure_motion(html);
+        assert_eq!((m.tweens, m.props.clone()), (1, vec!["skewX".to_string(), "x".to_string()]), "a script with src is not read");
+        assert_eq!(first_object("\"#a\", { opacity: 0, y: 2 }, { opacity: 1 }"), "{ opacity: 0, y: 2 }");
+    }
+
+    #[test]
+    fn scenes_refilled_from_one_layout_are_sent_back() {
+        let scene = |i: usize, visual: &str| {
+            format!(
+                "<section id=\"s{i}\" class=\"clip scene\" data-start=\"{i}\" data-duration=\"1\" data-track-index=\"1\"><div class=\"cam\"><div class=\"copy\"><p class=\"eyebrow\">0{i} / TECH</p><h2>Title {i}</h2></div>{visual}</div></section>"
+            )
+        };
+        let page = |body: String| format!("<html><head><style>.cam{{}}</style></head><body><div id=\"root\">{body}</div><script>const s = '<section class=\"clip scene\">';</script></body></html>");
+        let templated = page((0..6).map(|i| scene(i, "<div class=\"visual\"><img class=\"photo\"></div>")).collect());
+        let sigs = scene_signatures(&templated);
+        assert_eq!(sigs.len(), 6, "markup inside scripts is not a scene");
+        assert_eq!(sigs[0], "div.cam > div.copy > p.eyebrow > h2 > div.visual > img.photo");
+        let problems = layout_problems(&templated);
+        assert!(problems.len() == 1 && problems[0].starts_with("6 of the 6 scenes are built from the same layout"), "{problems:?}");
+        assert!(rework_request(&problems).contains("section 4a") || problems[0].contains("section 4a"));
+
+        let varied = page(
+            [
+                "<section id=\"s0\" class=\"clip\" data-start=\"0\" data-duration=\"1\"><div class=\"word-wall\"><span class=\"w\">FAST</span></div></section>",
+                "<section id=\"s1\" class=\"clip\" data-start=\"1\" data-duration=\"1\"><svg class=\"diagram\"><path class=\"link\"/></svg></section>",
+                "<div id=\"s2\" class=\"clip scene\" data-start=\"2\" data-duration=\"1\"><img class=\"full-bleed\"><h2 class=\"over\">Moves</h2></div>",
+                "<section id=\"s3\" class=\"clip\" data-start=\"3\" data-duration=\"1\"><div class=\"orbit\"><div class=\"core\"></div></div></section>",
+                "<section id=\"s4\" class=\"clip\" data-start=\"4\" data-duration=\"1\"><div class=\"cam\"><div class=\"copy\"><p class=\"eyebrow\">x</p><h2>y</h2></div></div></section>",
+            ]
+            .concat(),
+        );
+        assert_eq!(scene_signatures(&varied).len(), 5);
+        assert!(layout_problems(&varied).is_empty());
+        assert!(layout_problems(include_str!("../skills/video-design/references/video-skeleton.html")).is_empty());
+        // Nested sections count once each and close where they should.
+        let nested = page((0..4).map(|i| format!("<section class=\"clip\" data-start=\"{i}\"><section class=\"inner{i}\"><b class=\"k\"></b></section></section>")).collect());
+        assert_eq!(scene_signatures(&nested).len(), 4);
+        // A backdrop shared by every scene doesn't make different scenes look alike.
+        let backdrop = |inner: &str| format!("<i class=\"dot\"></i><i class=\"dot\"></i><i class=\"dot\"></i><div class=\"glow\"></div>{inner}");
+        let decorated = page(
+            ["<b class=\"giant\">A</b><i class=\"x\"></i>", "<svg class=\"map\"><path class=\"route\"/></svg>", "<img class=\"photo\"><h2 class=\"over\">c</h2>", "<div class=\"grid\"><div class=\"tile\"></div></div>"]
+                .iter()
+                .enumerate()
+                .map(|(i, inner)| format!("<section class=\"clip\" data-start=\"{i}\">{}</section>", backdrop(inner)))
+                .collect(),
+        );
+        assert!(layout_problems(&decorated).is_empty(), "{:?}", scene_signatures(&decorated));
+    }
+
+    #[test]
+    fn words_glued_to_a_span_are_found() {
+        let page = "<html><body><p>Pick<span class=\"a\">one real task</span>this week</p><p>Ask <span>inspect</span> improve</p>\
+                    <div class=\"wordmark\"><span class=\"ch\">O</span><span class=\"ch\">r</span></div><script>x='a<span>b'</script></body></html>";
+        assert_eq!(glued_words(page), vec!["Pickone".to_string(), "taskthis".to_string()]);
+        let problems = layout_problems(page);
+        assert!(problems.len() == 1 && problems[0].contains("\"Pickone\", \"taskthis\""));
+        assert!(glued_words(include_str!("../skills/video-design/references/video-skeleton.html")).is_empty());
+    }
+
+    #[test]
+    fn the_audio_engine_says_why_it_made_no_voice() {
+        let out = "  total voice duration: 0s\n\nanomalies (non-fatal):\n  - line vo: TTS failed — omitted (Gemini TTS HTTP 429: {\"error\":{\"message\":\"Rate limit exceeded for model gemini-3.8-flash-tts (limit: 10 requests per day on Free Tier).\",\"code\":\"too_many_requests\"}})";
+        assert_eq!(engine_failure(out, ""), "Rate limit exceeded for model gemini-3.8-flash-tts (limit: 10 requests per day on Free Tier).");
+        assert_eq!(engine_failure("", "warming up\nkokoro: model download failed\n"), "kokoro: model download failed");
+        assert_eq!(engine_failure("  - line vo: bad voice duration — omitted", ""), "- line vo: bad voice duration — omitted");
+    }
+
+    #[test]
+    fn the_polish_round_points_at_the_frames_when_there_are_some() {
+        let with = polish_request(&["At about 3.0s: the title is cut off.".into()], 12);
+        assert!(with.contains("- At about 3.0s: the title is cut off.") && with.contains("The 12 frames the art director looked at are attached") && with.contains(".review/"));
+        let without = polish_request(&["x".into()], 0);
+        assert!(!without.contains("attached") && without.contains("./hf lint"));
+    }
+
+    #[test]
+    fn missing_voice_and_music_are_told() {
+        let item = |kind: &str, ok: bool, note: &str| Item { id: kind.into(), kind: kind.into(), ok, note: note.into(), ..Default::default() };
+        assert_eq!(media_gaps(&[item("voiceover", true, ""), item("bgm", true, ""), item("sfx", false, "")]), "", "a missing sound effect isn't worth a mention");
+        let gaps = media_gaps(&[item("voiceover", false, "The voiceover wasn't made (gemini: quota used up)"), item("bgm", false, "no provider")]);
+        assert!(gaps.starts_with(" It has no voiceover: The voiceover wasn't made (gemini: quota used up). It has no music: none could be found for it (music comes from HeyGen"), "{gaps}");
+        assert_eq!(kokoro_voice("Friendly male voice, upbeat"), "am_michael");
+        assert_eq!(kokoro_voice("warm, clear, unhurried"), "af_heart");
+        assert_eq!(kokoro_voice("a female narrator"), "af_heart", "\"female\" isn't \"male\"");
+    }
+
+    #[test]
+    fn a_storyboard_can_ask_for_a_calm_video() {
+        assert!(is_calm("# Plan\n\nMotion: calm\n"));
+        assert!(is_calm("- **Motion:** calm, slow drift"));
+        assert!(is_calm("**Motion level: Calm**"));
+        assert!(!is_calm("Motion: high"));
+        assert!(!is_calm("The camera moves with calm confidence."));
     }
 }

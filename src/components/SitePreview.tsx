@@ -162,6 +162,28 @@ export default function SitePreview({
   }, [folder, folderVersion, videoProgress?.stage]);
   const isVideo = !!vinfo?.isVideo;
 
+  // A video's page is a fixed canvas (1920x1080 and so on): it is scaled to fit the panel and shown at
+  // the moment picked on the scrubber, since frame 0 of an animated video is usually still empty.
+  const stage = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = stage.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setBox({ w: el.clientWidth, h: el.clientHeight }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [tab, isVideo, info?.hasPage]);
+  const seconds = vinfo?.meta.seconds || 0;
+  const [at, setAt] = useState<number | null>(null);
+  const moment = at ?? Math.min(2, Math.max(0, seconds - 0.1));
+  const seekFrame = useCallback(() => {
+    if (isVideo) frame.current?.contentWindow?.postMessage({ type: "jv-seek", t: moment }, "*");
+  }, [isVideo, moment]);
+  useEffect(seekFrame, [seekFrame]);
+  const canvasW = vinfo?.meta.width || 1920;
+  const canvasH = vinfo?.meta.height || 1080;
+  const fit = box.w && box.h ? Math.min((box.w - 24) / canvasW, (box.h - 24) / canvasH, 1) : 0;
+
   // The page reports what the user clicked while "Point at a part" is on.
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
@@ -232,7 +254,7 @@ export default function SitePreview({
             </button>
           )}
           <button role="tab" aria-selected={tab === "preview"} className={tab === "preview" ? "on" : ""} onClick={() => setTab("preview")}>
-            {isVideo ? "First frame" : "Preview"}
+            {isVideo ? "Frame" : "Preview"}
           </button>
           <button role="tab" aria-selected={tab === "code"} className={tab === "code" ? "on" : ""} onClick={() => setTab("code")}>
             Code{files.length ? ` · ${files.length}` : ""}
@@ -248,13 +270,29 @@ export default function SitePreview({
         <span className="grow" />
         {tab === "review" || tab === "video" ? null : tab === "preview" ? (
           <>
-            <div className="seg" role="group" aria-label="Screen size">
-              {SIZES.map((s) => (
-                <button key={s.id} className={size === s.id ? "on" : ""} onClick={() => setSize(s.id)}>
-                  {s.label}
-                </button>
-              ))}
-            </div>
+            {isVideo ? (
+              <label className="sp-scrub" title="Which moment of the video to show">
+                <input
+                  type="range"
+                  min={0}
+                  max={seconds}
+                  step={0.1}
+                  value={moment}
+                  onChange={(e) => setAt(Number(e.target.value))}
+                  aria-label="Moment in the video"
+                  disabled={!seconds}
+                />
+                <span>{moment.toFixed(1)}s</span>
+              </label>
+            ) : (
+              <div className="seg" role="group" aria-label="Screen size">
+                {SIZES.map((s) => (
+                  <button key={s.id} className={size === s.id ? "on" : ""} onClick={() => setSize(s.id)}>
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <button className={`mini ${picking ? "primary" : ""}`} aria-pressed={picking} onClick={() => setPicking((p) => !p)} disabled={!info?.hasPage}>
               {picking ? "Click a part of the page…" : "Point at a part"}
             </button>
@@ -320,11 +358,28 @@ export default function SitePreview({
           <DirectorPanel state={director} running={running} onReview={onReview} />
         </div>
       ) : tab === "preview" ? (
-        <div className="sp-stage">
+        <div className={`sp-stage${isVideo ? " sp-stage-video" : ""}`} ref={stage}>
           {error ? (
             <p className="muted sp-note">{running ? "Waiting for the worker to create the project folder…" : error}</p>
           ) : !info?.hasPage ? (
             <p className="muted sp-note">{running ? "The first page appears here as soon as the worker saves it…" : "No web page was created in this folder."}</p>
+          ) : isVideo ? (
+            <div className="sp-canvas" style={{ width: canvasW * fit, height: canvasH * fit }}>
+              {fit > 0 && (
+                <iframe
+                  ref={frame}
+                  key={shown}
+                  src={`${info.url}?jvpick=1`}
+                  title="Video frame"
+                  className="sp-frame sp-frame-video"
+                  onLoad={() => {
+                    tellFrame();
+                    seekFrame();
+                  }}
+                  style={{ width: canvasW, height: canvasH, transform: `scale(${fit})` }}
+                />
+              )}
+            </div>
           ) : (
             <iframe
               ref={frame}

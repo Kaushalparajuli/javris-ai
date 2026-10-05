@@ -273,17 +273,44 @@ document.addEventListener('click',function(e){
  e.preventDefault();e.stopPropagation();clear();
  parent.postMessage({type:'jv-picked',desc:describe(e.target)},'*');
 },true);
+// A video page (a HyperFrames composition) can be shown at any moment: clips appear only inside their
+// time window, as the player shows them, and the paused timeline is moved to that second.
+function seek(t,tries){
+ var tl=window.__timelines&&window.__timelines.main;
+ if(!tl){if(tries<20)setTimeout(function(){seek(t,tries+1)},100);return;}
+ [].forEach.call(document.querySelectorAll('.clip[data-start]'),function(el){
+  var s=parseFloat(el.getAttribute('data-start'))||0,d=parseFloat(el.getAttribute('data-duration'));
+  el.style.visibility=(t>=s&&(isNaN(d)||t<s+d))?'':'hidden';
+ });
+ tl.seek(t,false);
+ window.__hfThreeTime=t;window.dispatchEvent(new CustomEvent('hf-seek',{detail:{time:t}}));
+}
 window.addEventListener('message',function(e){
  if(e.data&&e.data.type==='jv-pick'){picking=!!e.data.on;if(!picking)clear();}
+ if(e.data&&e.data.type==='jv-seek'){seek(+e.data.t||0,0);}
 });
 })();</script>"#;
 
-/// The page with the pick script added just before `</body>` (or at the end).
+/// A video page registers its timeline in `window.__timelines`, which HyperFrames' player makes; shown
+/// without the player it must already exist, or the page's own script stops at that line.
+const TIMELINES_SCRIPT: &str = "<script>window.__timelines=window.__timelines||{};</script>";
+
+/// The page with the pick script added just before `</body>` (or at the end), and the timelines
+/// holder at the top of `<head>` (or before the first script, or at the start).
 pub(crate) fn with_pick_script(html: &[u8]) -> Vec<u8> {
     let text = String::from_utf8_lossy(html);
-    let at = text.to_ascii_lowercase().rfind("</body>").unwrap_or(text.len());
-    let mut out = String::with_capacity(text.len() + PICK_SCRIPT.len());
-    out.push_str(&text[..at]);
+    let lower = text.to_ascii_lowercase();
+    let at = lower.rfind("</body>").unwrap_or(text.len());
+    let head = lower
+        .find("<head")
+        .and_then(|h| lower[h..].find('>').map(|e| h + e + 1))
+        .or_else(|| lower.find("<script"))
+        .unwrap_or(0)
+        .min(at);
+    let mut out = String::with_capacity(text.len() + PICK_SCRIPT.len() + TIMELINES_SCRIPT.len());
+    out.push_str(&text[..head]);
+    out.push_str(TIMELINES_SCRIPT);
+    out.push_str(&text[head..at]);
     out.push_str(PICK_SCRIPT);
     out.push_str(&text[at..]);
     out.into_bytes()
@@ -348,10 +375,22 @@ mod tests {
 
     #[test]
     fn the_pick_script_goes_before_the_closing_body_tag() {
+        let holder = TIMELINES_SCRIPT;
         let out = String::from_utf8(with_pick_script(b"<html><body><h1>Hi</h1></BODY></html>")).unwrap();
         let (script, close) = (out.find("jv-picked").unwrap(), out.find("</BODY>").unwrap());
-        assert!(out.starts_with("<html><body><h1>Hi</h1><script>") && script < close && out.ends_with("</BODY></html>"));
+        assert!(out.starts_with(&format!("{holder}<html><body><h1>Hi</h1><script>")) && script < close && out.ends_with("</BODY></html>"));
         assert!(String::from_utf8(with_pick_script(b"<p>no body tag</p>")).unwrap().ends_with("</script>"));
         assert!(String::from_utf8(with_pick_script("<p>नमस्ते</p></body>".as_bytes())).unwrap().contains("नमस्ते"));
+    }
+
+    #[test]
+    fn a_video_page_finds_its_timelines_holder_before_its_own_scripts() {
+        let page = "<!doctype html><html><head><meta charset=\"UTF-8\"><script src=\"vendor/gsap.min.js\"></script></head><body><script>window.__timelines[\"main\"]=tl;</script></body></html>";
+        let out = String::from_utf8(with_pick_script(page.as_bytes())).unwrap();
+        assert!(out.starts_with(&format!("<!doctype html><html><head>{TIMELINES_SCRIPT}<meta")), "first thing in <head>, after the doctype");
+        assert!(out.find(TIMELINES_SCRIPT).unwrap() < out.find("gsap.min.js").unwrap());
+        let headless = String::from_utf8(with_pick_script(b"<div>x</div><script>a()</script></body>")).unwrap();
+        assert!(headless.starts_with(&format!("<div>x</div>{TIMELINES_SCRIPT}<script>a()")), "no <head>: before the first script");
+        assert!(out.contains("jv-seek"), "a video can be shown at any moment");
     }
 }

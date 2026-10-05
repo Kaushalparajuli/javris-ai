@@ -880,6 +880,61 @@ fn problems_in(text: &str) -> Vec<String> {
     out
 }
 
+/// Text the checker saw running off the canvas in two or more samples (with one sample a second, a word
+/// swept past by a transition shows up once; a word the frame crops shows up again and again), one short
+/// note per piece of text in the order first seen, at most five.
+pub(crate) fn offcanvas_text(report: &str) -> Vec<String> {
+    // text -> (samples seen, first time, last time, how far on the first sighting, the largest overshoot in px)
+    let mut found: Vec<(String, u32, String, String, String, f64)> = vec![];
+    for line in report.lines() {
+        let l = line.trim();
+        if !l.contains("canvas_overflow") {
+            continue;
+        }
+        let samples = l.split(" samples)").next().filter(|h| h.len() < l.len()).and_then(|h| h.rsplit('(').next()).and_then(|n| n.trim().parse::<u32>().ok()).unwrap_or(1);
+        let at = l.split("t=").nth(1).and_then(|r| r.split_whitespace().next()).unwrap_or("").to_string();
+        let text = l.split('"').nth(1).unwrap_or("").trim().to_string();
+        let how = l.split("overflowed ").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").trim().to_string();
+        if text.is_empty() {
+            continue;
+        }
+        let px = how.split(|c: char| !(c.is_ascii_digit() || c == '.')).filter_map(|n| n.parse::<f64>().ok()).fold(0.0, f64::max);
+        match found.iter_mut().find(|f| f.0 == text) {
+            Some(f) => {
+                f.1 += samples;
+                f.3 = at;
+                f.5 = f.5.max(px);
+            }
+            None => found.push((text, samples, at.clone(), at, how, px)),
+        }
+    }
+    found
+        .into_iter()
+        // Seen again and again, or once but far past the edge (a passing move rarely overshoots by 60px).
+        .filter(|f| f.1 >= 2 || f.5 >= 60.0)
+        .take(5)
+        .map(|(text, _, first, last, how, _)| {
+            let when = if first == last { first } else { format!("{first} to {last}") };
+            format!("\"{text}\" at {when} ({how})")
+        })
+        .collect()
+}
+
+/// Run the checker for its layout report, sampling once a second, and turn text running off the canvas into one note for the worker.
+pub(crate) async fn offcanvas_problems(rt: &Runtime, dir: &Path, seconds: u32) -> Vec<String> {
+    let samples = seconds.max(9).to_string();
+    let Ok(Ok((_, text))) = tokio::time::timeout(Duration::from_secs(240), run_hf(rt, dir, &["check", "--samples", &samples, "--no-contrast"], |_| {})).await else { return vec![] };
+    let found = offcanvas_text(&text);
+    if found.is_empty() {
+        return vec![];
+    }
+    vec![format!(
+        "Words run off the frame and are cut off: {}. Keep every readable word inside the frame, at least 8% from the edges, all the way through each camera move; \
+         only a purely decorative oversized word may be cropped, and it carries data-layout-allow-overflow (never put that mark on a camera, world or scene).",
+        found.join("; ")
+    )]
+}
+
 #[tauri::command]
 pub async fn video_check(app: AppHandle, folder: String) -> Result<CheckReport, String> {
     let rt = Runtime::for_app(&app);
@@ -932,13 +987,22 @@ pub async fn video_render(app: AppHandle, folder: String, quality: Option<String
     .await
 }
 
+/// The render command, always with one browser: with several, HyperFrames 0.8 captures one worker's share of
+/// the frames about 85px short, leaving a strip of page background along the bottom, in every format. One
+/// worker was also the faster here (33s against 40s for a 20-second video, 44s against 57s for 25 seconds).
+fn render_args(quality: &str, out: &str) -> Vec<String> {
+    ["render", "--quality", quality, "--output", out, "--workers", "1"].iter().map(|s| s.to_string()).collect()
+}
+
 async fn render_project(rt: &Runtime, dir: &Path, quality: &str, mut progress: impl FnMut(u8, String)) -> Result<RenderDone, String> {
     let (name, q) = if quality == "final" { ("final", "high") } else { ("draft", "draft") };
     std::fs::create_dir_all(dir.join("renders")).map_err(|e| e.to_string())?;
     let out = format!("renders/{name}.mp4");
     let _ = std::fs::remove_file(dir.join(&out));
     let started = std::time::Instant::now();
-    let (ok, text) = run_hf(rt, dir, &["render", "--quality", q, "--output", &out], |line| {
+    let args = render_args(q, &out);
+    let args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let (ok, text) = run_hf(rt, dir, &args, |line| {
         if let Some((pct, msg)) = parse_progress(line) {
             progress(pct, msg);
         }
@@ -1103,5 +1167,32 @@ mod tests {
         println!("RENDER {} {} KB in {}s -> {}", done.path, done.size / 1024, done.seconds_taken, dir.display());
         assert!(done.size > 10_000, "the video is empty");
         assert_eq!(info_of(&dir).renders.len(), 1);
+    }
+
+    #[test]
+    fn text_running_off_the_canvas_is_read_from_the_check() {
+        let report = "Layout\n  ℹ t=0.67s canvas_overflow #w9 inside #root overflowed left 40px \"Pass\" — Text extends outside the composition canvas.\n\
+                      ℹ t=2-6s (4 samples) canvas_overflow #w1 inside #root overflowed left 566.99px \"ASK. INSPECT.\" — Text extends outside the composition canvas.\n\
+                      ⚠ t=3-5s (2 samples) canvas_overflow #w2 inside #root overflowed bottom 80px \"ONE REAL TASK\" — Text extends outside the composition canvas.\n\
+                      ℹ t=4-5s (2 samples) canvas_overflow #w1b inside #root overflowed left 300px \"ASK. INSPECT.\" — again\n\
+                      ⚠ t=2-10s (2 samples) container_overflow #orb-a inside #bg overflowed left 135px";
+        let found = offcanvas_text(report);
+        assert_eq!(found, vec!["\"ASK. INSPECT.\" at 2-6s to 4-5s (left 566.99px)".to_string(), "\"ONE REAL TASK\" at 3-5s (bottom 80px)".to_string()], "one sample is a passing move; each text once");
+        // One line per sample, as the checker prints them when the overflow changes from sample to sample.
+        let per_second = "  ℹ t=0.5s canvas_overflow #t inside #root overflowed top 20.53px \"MONDAY?\" — x\n  ℹ t=1.5s canvas_overflow #t inside #root overflowed top 17.39px \"MONDAY?\" — x\n\
+                          ℹ t=3.5s canvas_overflow #t inside #root overflowed top 25.69px \"MONDAY?\" — x\n  ℹ t=13.5s canvas_overflow h2 inside #root overflowed right 189px \"Team update\" — x";
+        assert_eq!(
+            offcanvas_text(per_second),
+            vec!["\"MONDAY?\" at 0.5s to 3.5s (top 20.53px)".to_string(), "\"Team update\" at 13.5s (right 189px)".to_string()],
+            "a word seen once counts only when it is far past the edge"
+        );
+        assert!(offcanvas_text("  ℹ t=4.5s canvas_overflow #w inside #root overflowed left 30px \"Passing\" — x").is_empty(), "a small single overshoot is a move passing through");
+        assert!(offcanvas_text("nothing here").is_empty());
+    }
+
+    #[test]
+    fn videos_render_with_one_browser() {
+        assert_eq!(render_args("draft", "renders/draft.mp4"), vec!["render", "--quality", "draft", "--output", "renders/draft.mp4", "--workers", "1"]);
+        assert_eq!(render_args("high", "renders/final.mp4")[2], "high");
     }
 }

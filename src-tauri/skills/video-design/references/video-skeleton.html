@@ -1,8 +1,23 @@
 <!doctype html>
-<!-- A complete, valid 12-second 1920x1080 composition: three scenes with crossfades, a staggered list,
-     captions and a voiceover track. Copy its structure; replace the content, colours and timing.
-     Scenes are `.clip` sections with data-start / data-duration; every animation lives on ONE paused
-     GSAP timeline registered at window.__timelines["main"]. -->
+<!-- A complete, valid 12-second 1920x1080 composition built for MOTION, not slides. It is a technique
+     reference: lift the techniques and the file structure, never the layouts or the content. Its three scenes
+     use three unrelated frames on purpose (type on the left, a stat beside its meaning, a centred lockup);
+     design every scene of your video from its own idea, never by refilling one scene layout. What it shows:
+       - a living background that spans the whole video (drifting light, a moving grid)
+       - a CAMERA: scenes sit side by side on one wide "world"; the camera pushes in, shakes on an impact,
+         and whip-pans to the next scene with motion blur
+       - kinetic type: every word of the hook enters with its own move (slam, mask rise, skew slide, tip-up)
+       - an SVG line that draws itself; a ring that fills while its number counts up; an orbiting dot
+       - a shape wipe (accent panels sweep across the frame) as a scene transition
+       - letters cascading into a lockup, a clip-path reveal, a gloss sweep, then a calm readable hold
+       - the SPECTACLE BEAT: when the last letter lands, one bloom flash, the letters punch in from 1.25x, a chromatic split
+         resolves in 0.2s and the camera shakes for three frames. Exactly one moment like this per video.
+       - the coral line is a small SPINE: it underlines the hook, then returns as the colour of the wipe and the CTA
+       - no captions: the voice carries the words (add them only when a brief asks)
+     Clips (class="clip") may sit inside the camera wrappers. Purely decorative things that are MEANT to move past their box
+     (drifting light, wipe panels, a gloss) carry data-layout-allow-overflow. Cameras, the world and scenes never do: the mark
+     would hide every word inside them from the check that catches text running off the canvas.
+     Every animation lives on ONE paused GSAP timeline registered at window.__timelines["main"]. -->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -10,111 +25,199 @@
     <script src="vendor/gsap.min.js"></script>
     <style>
       :root {
-        --bg: #14100d;
-        --surface: #2a211b;
-        --text: #f7efe6;
-        --muted: #c9b8a6;
-        --accent: #f0a04b;
-        --display: ui-serif, Georgia, serif;
+        --bg: #0b0d14;
+        --surface: #161a26;
+        --text: #f4f6fb;
+        --muted: #aab2c8;
+        --accent: #ff6a3d;
+        --accent-2: #3d8bff;
+        --display: ui-sans-serif, system-ui, -apple-system, sans-serif;
         --body: system-ui, -apple-system, sans-serif;
       }
       * { margin: 0; padding: 0; box-sizing: border-box; }
       html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); }
       #root { position: relative; width: 100%; height: 100%; overflow: hidden; font-family: var(--body); color: var(--text); }
 
-      /* Every scene fills the frame. Padding keeps text inside the safe area (about 8% each side). */
-      .scene { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; gap: 36px; padding: 120px 160px; }
-      .scene .bg { position: absolute; inset: 0; z-index: 0; }
-      .scene > *:not(.bg) { position: relative; z-index: 1; }
+      /* Background layer: one clip for the whole video, so the world never goes dead between scenes. */
+      #bg { position: absolute; inset: 0; overflow: hidden; background: radial-gradient(ellipse at 50% 120%, #1a2140 0%, var(--bg) 60%); }
+      .orb { position: absolute; width: 900px; height: 900px; border-radius: 50%; opacity: 0.55; }
+      #orb-a { left: -200px; top: -300px; background: radial-gradient(circle, rgba(255, 106, 61, 0.55) 0%, transparent 65%); }
+      #orb-b { right: -260px; bottom: -380px; background: radial-gradient(circle, rgba(61, 139, 255, 0.5) 0%, transparent 65%); }
+      #grid { position: absolute; left: -120px; right: -120px; top: -240px; height: 1600px; opacity: 0.18;
+        background-image: linear-gradient(rgba(255, 255, 255, 0.35) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.35) 1px, transparent 1px);
+        background-size: 120px 120px; }
 
-      h1, h2 { font-family: var(--display); font-weight: 700; line-height: 1.05; letter-spacing: -0.02em; text-wrap: balance; }
-      h1 { font-size: 150px; max-width: 1400px; }
-      h2 { font-size: 96px; max-width: 1400px; }
-      .kicker { font-size: 34px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
-      .lead { font-size: 52px; line-height: 1.3; color: var(--muted); max-width: 1200px; }
+      /* The camera. #viewport frames the canvas; #world holds scenes side by side and is what the camera moves. */
+      #viewport { position: absolute; inset: 0; overflow: hidden; }
+      #world { position: absolute; left: 0; top: 0; width: 3840px; height: 1080px; }
+      .scene { position: absolute; top: 0; width: 1920px; height: 1080px; overflow: hidden; }
+      #s1 { left: 0; }
+      #s2 { left: 1920px; }
+      /* Each scene has its own inner camera for push-ins and shakes, separate from the world's pans. */
+      .cam { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; padding: 120px 160px; }
 
-      #s1 .bg { background: radial-gradient(circle at 78% 30%, #4a2d17 0%, transparent 55%), var(--bg); }
-      #s2 .bg { background: var(--bg); }
-      #s3 .bg { background: linear-gradient(135deg, #3a2412, #14100d); }
+      .kicker { font-size: 34px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; color: var(--accent); }
+      .hook { font-family: var(--display); font-weight: 800; font-size: 168px; line-height: 1.02; letter-spacing: -0.035em; max-width: 1500px; margin-top: 28px; }
+      .w { display: inline-block; margin-right: 0.22em; }
+      .mask { display: inline-block; overflow: hidden; vertical-align: bottom; margin-right: 0.22em; padding-bottom: 0.08em; }
+      .mask .w { margin-right: 0; }
+      .accent { color: var(--accent); }
+      #s1-line { display: block; width: 980px; height: 60px; margin-top: 10px; overflow: visible; }
 
-      .items { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; margin-top: 24px; }
-      .item { background: var(--surface); border-radius: 28px; padding: 48px; display: flex; flex-direction: column; gap: 16px; }
-      .item b { font-family: var(--display); font-size: 64px; color: var(--accent); }
-      .item span { font-size: 40px; line-height: 1.25; color: var(--text); }
+      /* Scene 2: a stat on the left, its meaning on the right. */
+      #s2 .cam { flex-direction: row; align-items: center; gap: 120px; }
+      .ring-wrap { position: relative; width: 560px; height: 560px; flex: none; }
+      #s2-ring { display: block; width: 560px; height: 560px; }
+      .ring-num { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: var(--display); font-weight: 800; font-size: 170px; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
+      .orbit { position: absolute; inset: 0; }
+      .orbit-dot { position: absolute; left: 266px; top: -14px; width: 28px; height: 28px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 30px var(--accent-2); }
+      .s2-copy { display: flex; flex-direction: column; gap: 34px; max-width: 900px; }
+      .s2-title { font-family: var(--display); font-weight: 800; font-size: 104px; line-height: 1.02; letter-spacing: -0.03em; text-wrap: balance; }
+      .chips { display: flex; flex-wrap: wrap; gap: 22px; }
+      .chip { display: flex; align-items: center; gap: 16px; padding: 20px 30px; border-radius: 999px; background: var(--surface); border: 2px solid rgba(255, 255, 255, 0.12); font-size: 42px; font-weight: 600; }
+      .chip i { display: block; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); }
 
-      .big { font-family: var(--display); font-size: 300px; font-weight: 700; color: var(--accent); line-height: 1; }
+      /* The spectacle beat's bloom: a radial flash that exists only for its half second. */
+      #flash { position: absolute; inset: 0; z-index: 9; pointer-events: none; background: radial-gradient(circle at 50% 42%, rgba(255, 240, 225, 0.95) 0%, rgba(255, 106, 61, 0.35) 38%, rgba(255, 106, 61, 0) 70%); }
+      /* The wipe: accent panels that sweep across and hide the cut to scene 3. */
+      #wipe { position: absolute; inset: 0; overflow: hidden; }
+      .panel { position: absolute; inset: 0; }
+      #wipe-a { background: var(--accent-2); }
+      #wipe-b { background: var(--accent); }
 
-      /* Captions: one short phrase at a time, bottom third, high contrast. */
-      .cap { position: absolute; left: 160px; right: 160px; bottom: 96px; text-align: center; z-index: 5; }
-      .cap span { display: inline-block; font-size: 52px; line-height: 1.25; padding: 14px 32px; border-radius: 18px; background: rgba(0, 0, 0, 0.62); color: #fff; max-width: 1500px; }
+      /* Scene 3: lockup and call to action. */
+      #s3 { position: absolute; inset: 0; overflow: hidden; } /* no background of its own: the living background shows through */
+      #s3 .cam { align-items: center; text-align: center; gap: 40px; }
+      .wordmark { display: flex; font-family: var(--display); font-weight: 900; font-size: 250px; letter-spacing: -0.05em; line-height: 1; }
+      .wordmark .ch { display: block; }
+      .tagline { font-size: 56px; color: var(--muted); max-width: 1300px; text-wrap: balance; }
+      .cta { position: relative; overflow: hidden; display: block; padding: 26px 56px; border-radius: 999px; background: var(--accent); color: #140a05; font-size: 46px; font-weight: 800; }
+      .cta-text { position: relative; z-index: 1; white-space: nowrap; }
+      .gloss { position: absolute; top: 0; bottom: 0; left: 0; width: 40%; background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.55), transparent); }
+
     </style>
   </head>
   <body>
     <div id="root" data-composition-id="main" data-start="0" data-duration="12" data-width="1920" data-height="1080">
-      <!-- Scene 1: the hook (0 - 4s). Scenes overlap by 0.5s so they can crossfade. -->
-      <section id="s1" class="clip scene" data-start="0" data-duration="4.5" data-track-index="0">
-        <div class="bg"></div>
-        <p class="kicker" id="s1-kicker">Rani's Bakery · Patan</p>
-        <h1 id="s1-title">Warm bread, every morning.</h1>
-        <p class="lead" id="s1-lead">Baked at 4am, on your table by 7.</p>
-      </section>
+      <!-- Background: spans the whole video on the lowest track. -->
+      <div id="bg" class="clip" data-start="0" data-duration="12" data-track-index="0">
+        <div id="grid" data-layout-allow-overflow></div>
+        <div id="orb-a" class="orb" data-layout-allow-overflow></div>
+        <div id="orb-b" class="orb" data-layout-allow-overflow></div>
+      </div>
 
-      <!-- Scene 2: three things, staggered (4 - 8.5s). -->
-      <section id="s2" class="clip scene" data-start="4" data-duration="4.5" data-track-index="1">
-        <div class="bg"></div>
-        <p class="kicker" id="s2-kicker">What we bake</p>
-        <h2 id="s2-title">Three favourites.</h2>
-        <div class="items">
-          <div class="item" id="s2-i1"><b>01</b><span>Sel roti, crisp outside, soft inside</span></div>
-          <div class="item" id="s2-i2"><b>02</b><span>Lakhamari for festivals</span></div>
-          <div class="item" id="s2-i3"><b>03</b><span>Sourdough, slow-risen for two days</span></div>
+      <div id="viewport">
+        <div id="world">
+          <!-- Scene 1: the hook (0 - 4.1s). Kinetic type, a line that draws itself, an impact shake. -->
+          <section id="s1" class="clip scene" data-start="0" data-duration="4.1" data-track-index="1">
+            <div id="s1-cam" class="cam">
+              <p id="s1-kicker" class="kicker">Introducing Orbit</p>
+              <h1 id="s1-hook" class="hook">
+                <span id="w1" class="w">Notes</span><span class="mask"><span id="w2" class="w">that</span></span><span id="w3" class="w">sort</span><span id="w4" class="w accent">themselves.</span>
+              </h1>
+              <svg id="s1-line" viewBox="0 0 980 60" aria-hidden="true">
+                <path id="s1-path" d="M10 40 C 220 8, 420 58, 620 28 S 900 20, 970 34" fill="none" stroke="#ff6a3d" stroke-width="12" stroke-linecap="round" pathLength="1" stroke-dasharray="1" stroke-dashoffset="1" />
+              </svg>
+            </div>
+          </section>
+
+          <!-- Scene 2: the proof (3.4 - 8.25s, ending while the wipe covers the frame). The camera whip-pans here; a ring fills while its number counts. -->
+          <section id="s2" class="clip scene" data-start="3.4" data-duration="4.85" data-track-index="2">
+            <div id="s2-cam" class="cam">
+              <div class="ring-wrap">
+                <svg id="s2-ring" viewBox="0 0 560 560" aria-hidden="true">
+                  <circle cx="280" cy="280" r="230" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="34" />
+                  <circle id="s2-arc" cx="280" cy="280" r="230" fill="none" stroke="#ff6a3d" stroke-width="34" stroke-linecap="round" pathLength="1" stroke-dasharray="1" stroke-dashoffset="1" transform="rotate(-90 280 280)" />
+                </svg>
+                <div id="s2-orbit" class="orbit"><div class="orbit-dot"></div></div>
+                <div id="s2-num" class="ring-num">0%</div>
+              </div>
+              <div class="s2-copy">
+                <h2 id="s2-title" class="s2-title">of your notes, filed before you look.</h2>
+                <div class="chips">
+                  <div id="chip1" class="chip"><i></i>Meetings</div>
+                  <div id="chip2" class="chip"><i></i>Ideas</div>
+                  <div id="chip3" class="chip"><i></i>Tasks</div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- Scene 3: lockup and the call to action (8.2 - 12s), revealed under the wipe. -->
+      <section id="s3" class="clip" data-start="8.2" data-duration="3.8" data-track-index="3">
+        <div id="s3-cam" class="cam">
+          <div id="s3-mark" class="wordmark"><span class="ch">O</span><span class="ch">r</span><span class="ch">b</span><span class="ch">i</span><span class="ch">t</span></div>
+          <p id="s3-tag" class="tagline">Your notes, sorted. Free on Mac and iPhone.</p>
+          <div id="s3-cta" class="cta"><span class="cta-text">Try it at orbit.app</span><div id="s3-gloss" class="gloss" data-layout-allow-overflow></div></div>
         </div>
       </section>
 
-      <!-- Scene 3: one number and the call to action (8 - 12s). -->
-      <section id="s3" class="clip scene" data-start="8" data-duration="4" data-track-index="2">
-        <div class="bg"></div>
-        <p class="kicker" id="s3-kicker">Open every day</p>
-        <div class="big" id="s3-big">7am</div>
-        <p class="lead" id="s3-lead">Mangal Bazaar, Patan. Call 9800000000 to order.</p>
-      </section>
+      <!-- The spectacle beat's flash, on its own track above everything. -->
+      <div id="flash" class="clip" data-start="9.35" data-duration="0.5" data-track-index="8" data-layout-allow-overflow></div>
 
-      <!-- Captions: separate clips on their own track, timed to the narration. -->
-      <div id="c1" class="clip cap" data-start="0.4" data-duration="3.2" data-track-index="5"><span>Warm bread, every morning.</span></div>
-      <div id="c2" class="clip cap" data-start="4.2" data-duration="3.6" data-track-index="5"><span>Sel roti, lakhamari and slow-risen sourdough.</span></div>
-      <div id="c3" class="clip cap" data-start="8.3" data-duration="3.4" data-track-index="5"><span>Open from seven. Call to order.</span></div>
-
+      <!-- The wipe sits above the scenes it hides. -->
+      <div id="wipe" class="clip" data-start="7.7" data-duration="1.2" data-track-index="6">
+        <div id="wipe-a" class="panel" data-layout-allow-overflow></div>
+        <div id="wipe-b" class="panel" data-layout-allow-overflow></div>
+      </div>
     </div>
 
     <script>
       const tl = gsap.timeline({ paused: true });
+      const W = 1920;
 
-      // Set the starting state inside the tween (fromTo), never with a CSS transform on the same property.
-      // Scene 1
-      tl.fromTo("#s1-kicker", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.6, ease: "power2.out" }, 0.2);
-      tl.fromTo("#s1-title", { opacity: 0, y: 60 }, { opacity: 1, y: 0, duration: 0.9, ease: "power3.out" }, 0.4);
-      tl.fromTo("#s1-lead", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.7, ease: "power2.out" }, 1.2);
-      tl.to("#s1-title", { scale: 1.04, duration: 3.6, ease: "none" }, 0.4); // slow push-in so it never sits still
-      tl.to("#s1", { opacity: 0, duration: 0.5, ease: "power1.inOut" }, 4.0); // crossfade out as scene 2 arrives
+      // ---- Background: slow, continuous, never still. ----
+      tl.fromTo("#grid", { y: 0 }, { y: -240, duration: 12, ease: "none" }, 0);
+      tl.fromTo("#orb-a", { x: 0, y: 0 }, { x: 260, y: 140, duration: 6, ease: "sine.inOut", yoyo: true, repeat: 1 }, 0);
+      tl.fromTo("#orb-b", { x: 0, y: 0 }, { x: -220, y: -160, duration: 6, ease: "sine.inOut", yoyo: true, repeat: 1 }, 0);
 
-      // Scene 2
-      tl.fromTo("#s2", { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power1.inOut" }, 4.0);
-      tl.fromTo("#s2-kicker", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.5 }, 4.5);
-      tl.fromTo("#s2-title", { opacity: 0, y: 40 }, { opacity: 1, y: 0, duration: 0.7, ease: "power3.out" }, 4.6);
-      tl.fromTo(".item", { opacity: 0, y: 70 }, { opacity: 1, y: 0, duration: 0.7, ease: "back.out(1.4)", stagger: 0.25 }, 5.3);
-      tl.to("#s2", { opacity: 0, duration: 0.5, ease: "power1.inOut" }, 8.0);
+      // ---- Scene 1: every word has its own entrance. ----
+      tl.fromTo("#s1-cam", { scale: 1 }, { scale: 1.07, duration: 4.1, ease: "none" }, 0); // push-in for the whole scene
+      tl.fromTo("#s1-kicker", { opacity: 0, x: -60 }, { opacity: 1, x: 0, duration: 0.5, ease: "expo.out" }, 0.15);
+      tl.fromTo("#w1", { opacity: 0, scale: 1.9 }, { opacity: 1, scale: 1, duration: 0.45, ease: "expo.out" }, 0.35); // slam
+      tl.fromTo("#s1-cam", { x: 0 }, { keyframes: [{ x: -14 }, { x: 10 }, { x: -5 }, { x: 0 }], duration: 0.28, ease: "none", immediateRender: false }, 0.62); // impact shake (a 2nd tween on #s1-cam: immediateRender false)
+      tl.fromTo("#w2", { yPercent: 110 }, { yPercent: 0, duration: 0.5, ease: "power4.out" }, 0.75); // rises out of its mask
+      tl.fromTo("#w3", { opacity: 0, x: 260, skewX: -20 }, { opacity: 1, x: 0, skewX: 0, duration: 0.55, ease: "expo.out" }, 1.05);
+      tl.fromTo("#w4", { clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)", duration: 0.6, ease: "power3.inOut" }, 1.33); // wiped on, left to right
+      tl.fromTo("#s1-path", { strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.8, ease: "power2.inOut" }, 1.95); // the line draws itself
 
-      // Scene 3
-      tl.fromTo("#s3", { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power1.inOut" }, 8.0);
-      tl.fromTo("#s3-kicker", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.5 }, 8.4);
-      tl.fromTo("#s3-big", { opacity: 0, scale: 0.8 }, { opacity: 1, scale: 1, duration: 0.9, ease: "back.out(1.6)" }, 8.6);
-      tl.fromTo("#s3-lead", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.7 }, 9.5);
+      // ---- Whip-pan to scene 2: the world slides one screen left, blurred while it moves. ----
+      tl.fromTo("#world", { x: 0 }, { x: -W, duration: 0.7, ease: "expo.inOut" }, 3.4);
+      tl.fromTo("#viewport", { filter: "blur(0px)" }, { keyframes: [{ filter: "blur(18px)" }, { filter: "blur(0px)" }], duration: 0.7, ease: "none" }, 3.4); // blur on the frame, not the moving world
 
-      // Captions fade in and out inside their own windows.
-      ["#c1", "#c2", "#c3"].forEach((id, i) => {
-        const at = [0.4, 4.2, 8.3][i];
-        tl.fromTo(id + " span", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.3 }, at);
-      });
+      // ---- Scene 2: ring fills, number counts, chips arrive from three directions. ----
+      tl.fromTo("#s2-cam", { scale: 1.04 }, { scale: 1, duration: 4.85, ease: "power1.out" }, 3.4); // a slow settle (pull-back)
+      tl.fromTo("#s2-arc", { strokeDashoffset: 1 }, { strokeDashoffset: 0.13, duration: 1.6, ease: "power3.out" }, 4.0);
+      const count = { v: 0 };
+      tl.fromTo(count, { v: 0 }, { v: 87, duration: 1.6, ease: "power3.out", onUpdate: () => { document.getElementById("s2-num").textContent = Math.round(count.v) + "%"; } }, 4.0);
+      tl.fromTo("#s2-num", { scale: 0.6, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.6, ease: "back.out(2)" }, 4.0);
+      tl.fromTo("#s2-orbit", { rotation: 0 }, { rotation: 300, duration: 4.25, ease: "power1.inOut" }, 4.0);
+      tl.fromTo("#s2-title", { opacity: 0, clipPath: "inset(0 100% 0 0)" }, { opacity: 1, clipPath: "inset(0 0% 0 0)", duration: 0.8, ease: "power3.inOut" }, 4.5);
+      tl.fromTo("#chip1", { opacity: 0, x: -140 }, { opacity: 1, x: 0, duration: 0.55, ease: "back.out(1.7)" }, 5.4);
+      tl.fromTo("#chip2", { opacity: 0, y: 90 }, { opacity: 1, y: 0, duration: 0.55, ease: "back.out(1.7)" }, 5.6);
+      tl.fromTo("#chip3", { opacity: 0, x: 140 }, { opacity: 1, x: 0, duration: 0.55, ease: "back.out(1.7)" }, 5.8);
+      tl.fromTo("#s2-num", { scale: 1 }, { scale: 1.08, duration: 0.25, ease: "sine.inOut", yoyo: true, repeat: 1, immediateRender: false }, 6.4); // a beat on the number
+
+      // ---- The wipe: two panels sweep across, scene 3 is underneath when they leave. ----
+      tl.fromTo("#wipe-a", { xPercent: -100 }, { keyframes: [{ xPercent: 0, duration: 0.45, ease: "power4.in" }, { xPercent: 100, duration: 0.5, ease: "power4.out" }] }, 7.7);
+      tl.fromTo("#wipe-b", { xPercent: -100 }, { keyframes: [{ xPercent: 0, duration: 0.45, ease: "power4.in" }, { xPercent: 100, duration: 0.5, ease: "power4.out" }] }, 7.8);
+
+      // ---- Scene 3: letters cascade into the lockup, tagline wipes on, CTA pops and glints, then it holds. ----
+      tl.fromTo("#s3-cam", { scale: 1.1 }, { scale: 1, duration: 1.4, ease: "expo.out" }, 8.2);
+      tl.fromTo("#s3-mark .ch", { opacity: 0, yPercent: 110 }, { opacity: 1, yPercent: 0, duration: 0.7, ease: "back.out(1.6)", stagger: 0.07 }, 8.45); // letters overshoot and settle
+      // The spectacle beat (9.42s), when the last letter has landed: flash, punch, chromatic split, shake. Each part
+      // animates a property nothing else touches here, and later tweens on the same element use immediateRender: false.
+      const BEAT = 9.42;
+      tl.fromTo("#flash", { opacity: 0 }, { keyframes: [{ opacity: 0.9, duration: 0.05 }, { opacity: 0, duration: 0.3, ease: "power2.out" }] }, BEAT);
+      tl.fromTo("#s3-mark .ch", { scale: 1.25 }, { scale: 1, duration: 0.3, ease: "power3.out", immediateRender: false }, BEAT);
+      tl.fromTo("#s3-mark", { textShadow: "-12px 0 rgba(255,70,70,0.85), 12px 0 rgba(61,139,255,0.85)" }, { textShadow: "0px 0 rgba(255,70,70,0), 0px 0 rgba(61,139,255,0)", duration: 0.2, ease: "power2.out", immediateRender: false }, BEAT);
+      tl.fromTo("#s3-cam", { x: 0 }, { keyframes: [{ x: -12 }, { x: 9 }, { x: 0 }], duration: 0.1, ease: "none", immediateRender: false }, BEAT);
+      tl.fromTo("#s3-tag", { clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)", duration: 0.7, ease: "power3.inOut" }, 9.1);
+      tl.fromTo("#s3-cta", { opacity: 0, scale: 0.7 }, { opacity: 1, scale: 1, duration: 0.6, ease: "back.out(2.2)" }, 9.5);
+      tl.fromTo("#s3-gloss", { xPercent: -120 }, { xPercent: 320, duration: 0.9, ease: "power2.inOut" }, 10.1);
+      tl.fromTo("#s3-mark", { scale: 1 }, { scale: 1.02, duration: 2.6, ease: "sine.inOut" }, 9.4); // ambient idle: a 2% breath so the hold never freezes
 
       window.__timelines["main"] = tl;
     </script>

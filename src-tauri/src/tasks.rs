@@ -2022,6 +2022,20 @@ fn set_project(app: &AppHandle, id: u32, project: &Path) {
     }
 }
 
+/// Frames of a video draft left in `project`/.review for the worker to look at (JPG or PNG, in order, at most 24).
+pub(crate) fn review_shots(project: &Path) -> Vec<PathBuf> {
+    let mut shots: Vec<PathBuf> = std::fs::read_dir(project.join(".review"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "png")))
+        .collect();
+    shots.sort();
+    shots.truncate(24);
+    shots
+}
+
 /// Codex arguments for working in `project`, writing its report to the task folder `dir`.
 fn code_args(s: &Settings, dir: &Path, project: &Path) -> Vec<String> {
     let mut args = base_args(s, dir, "deep", true);
@@ -2179,6 +2193,13 @@ pub fn start_code_task(
     // Skills the worker should follow (the design skill for a website), copied next to its notes.
     let know = crate::routines::copy_know_how(&app, &know_how.unwrap_or_default(), &dir);
     let mut args = code_args(&s, &dir, &project);
+    // A video worker polishing a draft sees the frames the art director saw. Right after "exec", so the
+    // option that follows ends the list of images and the prompt is never taken for one.
+    if mode == "video" {
+        for (n, shot) in review_shots(&project).iter().enumerate() {
+            args.insert(1 + n, format!("--image={}", shot.display()));
+        }
+    }
     args.push(format!(
         "{}{}{}",
         code_prompt(&request, &screen, &project, &dir, &mode),
@@ -2194,6 +2215,20 @@ pub fn start_code_task(
 #[cfg(test)]
 mod code_tests {
     use super::*;
+
+    #[test]
+    fn review_frames_are_found_in_order() {
+        let project = std::env::temp_dir().join(format!("jarvis-shots-{}", std::process::id()));
+        let review = project.join(".review");
+        std::fs::create_dir_all(&review).unwrap();
+        for name in ["at-12.5s.jpg", "at-02.5s.jpg", "notes.txt", "at-30.0s.PNG"] {
+            std::fs::write(review.join(name), b"x").unwrap();
+        }
+        let shots: Vec<String> = review_shots(&project).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(shots, vec!["at-02.5s.jpg", "at-12.5s.jpg", "at-30.0s.PNG"]);
+        assert!(review_shots(&std::env::temp_dir().join("no-such-project-here")).is_empty());
+        let _ = std::fs::remove_dir_all(&project);
+    }
 
     #[test]
     fn code_prompt_fences_screen_text() {

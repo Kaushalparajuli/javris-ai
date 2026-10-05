@@ -674,8 +674,8 @@ const TOOLS = [
         seconds: { type: "INTEGER", description: "Length in seconds, 5 to 120. Reels 15-30, promos 20-45, explainers 45-90." },
         workflow: {
           type: "STRING",
-          enum: ["product-launch-video", "faceless-explainer", "slideshow", "music-to-video", "embedded-captions", "talking-head-recut", "pr-to-video", "motion-graphics", "general-video"],
-          description: "A ready-made way of making this kind of video, if one clearly fits: product-launch-video for products and promos, faceless-explainer for narrated explainers, slideshow for photos with captions, motion-graphics for animated graphics. Leave out otherwise.",
+          enum: ["product-launch-video", "faceless-explainer", "music-to-video", "embedded-captions", "talking-head-recut", "pr-to-video", "motion-graphics", "general-video"],
+          description: "A ready-made way of making this kind of video, if one clearly fits: product-launch-video for products, promos and site tours; faceless-explainer for narrated explainers and topic overviews; music-to-video for a video cut to a song (photo montages too); talking-head-recut to add titles and callouts to someone's talking clip; embedded-captions to caption a clip; pr-to-video for a code change; motion-graphics for a short animated graphic under 10 seconds with no narration. Leave out otherwise.",
         },
         approve_automatically: { type: "BOOLEAN", description: "true only if the user said not to ask them to approve the storyboard ('just make it')." },
       },

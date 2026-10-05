@@ -1091,6 +1091,12 @@ button.day-stat:hover { border-color: rgba(127, 220, 255, 0.4); }
 .sp-title i.live { background: #78dca0; box-shadow: 0 0 8px rgba(120, 220, 160, 0.8); animation: pulse 1.4s ease-in-out infinite; }
 .sp-stage { height: clamp(320px, 58vh, 720px); display: flex; justify-content: center; background: #1a1d27; overflow: auto; }
 .sp-frame { height: 100%; width: 100%; border: 0; background: #fff; }
+.sp-stage-video { align-items: center; overflow: hidden; }
+.sp-canvas { flex: none; overflow: hidden; border-radius: 6px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35); }
+.sp-frame-video { display: block; transform-origin: 0 0; background: #000; }
+.sp-scrub { display: flex; align-items: center; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.sp-scrub input { width: 180px; }
+.sp-scrub span { min-width: 3.4em; text-align: right; opacity: 0.8; }
 .sp-note { align-self: center; padding: 20px; text-align: center; }
 
 /* Mode picker under the prompt */

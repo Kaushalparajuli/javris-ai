@@ -1035,7 +1035,7 @@ const BUILTIN: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 /// Raise this when the built-in files change, so installs that haven't edited them get the new ones.
-const BUILTIN_VERSION: u32 = 4;
+const BUILTIN_VERSION: u32 = 16;
 
 /// A small stable hash (FNV-1a), to tell whether the user has edited a built-in skill.
 fn fingerprint(text: &str) -> u64 {
