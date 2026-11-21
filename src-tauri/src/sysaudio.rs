@@ -375,10 +375,10 @@ pub fn vp_stop(app: AppHandle) {
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioRoute {
-    input_name: String,
+    pub(crate) input_name: String,
     output_name: String,
     /// "bluetooth", "usb", "builtin"… or empty when unknown.
-    input_transport: String,
+    pub(crate) input_transport: String,
     output_transport: String,
     same_device: bool,
     /// Sound goes to something on or in the ears, so Jarvis can't hear itself.

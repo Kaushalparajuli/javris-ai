@@ -139,11 +139,35 @@ pub fn set_session_mic(app: &AppHandle, on: bool) {
     app.state::<WakeState>().session_mic.store(on, Ordering::SeqCst);
 }
 
+/// Why "hey Jarvis" shouldn't listen through this microphone, if there's a reason.
+///
+/// A Bluetooth headset's mic only works in its call mode (HFP): while it's open, everything the
+/// headphones play drops to call quality and the mic light stays on. Fine for a conversation,
+/// not for listening all day. `chosen` is the mic picked in Settings ("" for the system
+/// default); the route only knows the default mic's connection, so another chosen mic is
+/// let through rather than guessed at.
+fn bluetooth_pause(chosen: &str, input_name: &str, input_transport: &str) -> Option<String> {
+    let is_default = chosen.is_empty() || chosen == input_name;
+    if !is_default || input_transport != "bluetooth" {
+        return None;
+    }
+    let name = if input_name.is_empty() { String::new() } else { format!(" ({input_name})") };
+    Some(format!(
+        "\u{201c}Hey Jarvis\u{201d} is paused while your microphone is Bluetooth{name}: listening all the time would switch your headphones to call quality. Use a USB or built-in mic, or press \u{2325}Space to talk."
+    ))
+}
+
 /// Start listening for "hey Jarvis" (restarting if it already is, e.g. after a mic change).
+/// Refuses, with a message to show, when the microphone is a Bluetooth headset.
 pub fn start(app: &AppHandle) -> Result<(), String> {
     stop(app);
     let state = app.state::<WakeState>();
     let device = settings::load(app).mic_device;
+    let route = crate::sysaudio::audio_route();
+    if let Some(why) = bluetooth_pause(&device, &route.input_name, &route.input_transport) {
+        let _ = app.emit("wake-word-paused", why.clone());
+        return Err(why);
+    }
     let session_mic = state.session_mic.clone();
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<i16>>();
 
@@ -231,6 +255,23 @@ pub fn wake_word_set(app: AppHandle, enabled: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bluetooth_mics_pause_the_wake_word() {
+        let why = bluetooth_pause("", "CMF Buds", "bluetooth").expect("paused");
+        assert!(why.contains("Bluetooth (CMF Buds)"), "{why}");
+        assert!(why.contains("call quality") && why.contains("\u{2325}Space"), "{why}");
+        // The Bluetooth mic chosen by name in Settings is the default one too.
+        assert!(bluetooth_pause("AirPods Pro", "AirPods Pro", "bluetooth").is_some());
+        // Built-in, USB and unknown connections listen as usual.
+        assert_eq!(bluetooth_pause("", "MacBook Pro Microphone", "builtin"), None);
+        assert_eq!(bluetooth_pause("", "Shure MV7", "usb"), None);
+        assert_eq!(bluetooth_pause("", "", ""), None);
+        // A different mic is chosen in Settings: the default's Bluetooth connection doesn't apply.
+        assert_eq!(bluetooth_pause("Shure MV7", "CMF Buds", "bluetooth"), None);
+        // No device name known: still a clear message.
+        assert!(bluetooth_pause("", "", "bluetooth").unwrap().contains("Bluetooth: listening"));
+    }
 
     /// Scores 16 kHz mono WAV files: `WAKE_WAVS=/path/a.wav:/path/b.wav cargo test -- --ignored --nocapture wake_word_scores`
     #[test]

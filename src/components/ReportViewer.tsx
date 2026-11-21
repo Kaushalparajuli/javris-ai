@@ -129,7 +129,7 @@ export default function ReportViewer({
       <header>
         <div className="report-head">
           <div className="label">
-            {task.kind === "image" ? "Images" : task.kind === "slides" ? "Slide deck" : task.kind === "browser" ? "Browser task" : "Report"} · task #{task.id}
+            {task.kind === "image" ? "Images" : task.kind === "slides" ? "Slide deck" : task.kind === "browser" ? "Web task" : "Report"}
             {running ? " · running" : task.status !== "done" ? ` · ${task.status}` : ""}
           </div>
           <h2>{task.title}</h2>
@@ -141,7 +141,7 @@ export default function ReportViewer({
           </button>
         )}
         <button className="mini" onClick={() => invoke("reveal_task", { id: task.id }).catch(() => {})}>
-          Show file
+          Show in Finder
         </button>
         <PanelControls expanded={expanded} onToggleExpand={onToggleExpand} onClose={onClose} />
       </header>
@@ -151,7 +151,7 @@ export default function ReportViewer({
           {steps.length === 0 && (
             <li className="now">
               <i />
-              <span>Starting the worker…</span>
+              <span>Starting…</span>
             </li>
           )}
           {steps.map((s, i) => (
@@ -188,7 +188,7 @@ export default function ReportViewer({
               {steps.length === 0 && (
                 <li className="now">
                   <i />
-                  <span>Starting the worker…</span>
+                  <span>Starting…</span>
                 </li>
               )}
               {steps.map((s, i) => (
@@ -225,7 +225,7 @@ export default function ReportViewer({
               <figcaption>
                 <span>{p.split(/[\\/]/).pop()}</span>
                 <button className="mini" onClick={() => invoke("reveal_path", { path: p })}>
-                  Show file
+                  Show in Finder
                 </button>
               </figcaption>
             </figure>
@@ -244,7 +244,7 @@ export default function ReportViewer({
                   <figcaption>
                     <span>{p.split(/[\\/]/).pop()}</span>
                     <button className="mini" onClick={() => invoke("reveal_path", { path: p })}>
-                      Show file
+                      Show in Finder
                     </button>
                   </figcaption>
                 </figure>
@@ -253,7 +253,7 @@ export default function ReportViewer({
           )}
         </div>
       ) : running ? (
-        <p className="muted pad-lg">The report appears here as soon as the worker saves it.</p>
+        <p className="muted pad-lg">The report appears here as soon as it's written.</p>
       ) : (
         <p className="error-text pad-lg">{task.error || error || "This task has no report."}</p>
       )}

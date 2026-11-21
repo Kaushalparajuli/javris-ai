@@ -557,7 +557,7 @@ export default function DocumentEditor({ doc, tasks, micOn, onToggleMic, onWrite
             PDF
           </button>
           <button className="mini" onClick={() => invoke("reveal_task", { id: doc.id }).catch((e) => setError(String(e)))}>
-            Show file
+            Show in Finder
           </button>
         </div>
       </div>

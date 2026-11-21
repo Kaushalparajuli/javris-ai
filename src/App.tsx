@@ -3,11 +3,10 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { groupWork } from "./lib/workItems";
+import { noticeLine, toolLine } from "./lib/toolLines";
 import type { LibraryItem } from "./components/LibraryPage";
 import DocumentEditor from "./components/DocumentEditor";
 import ChatRow from "./components/ChatRow";
-import ModePicker from "./components/ModePicker";
-import { getMode, nextMode, setMode } from "./lib/mode";
 import ImageThumb from "./components/ImageThumb";
 import LibraryPage from "./components/LibraryPage";
 import Orb from "./components/Orb";
@@ -34,14 +33,13 @@ import MeetingBanner from "./components/MeetingBanner";
 import { listen } from "@tauri-apps/api/event";
 import SettingsPanel from "./components/SettingsPanel";
 import TaskCard from "./components/TaskCard";
+import SidebarMenu from "./components/SidebarMenu";
 import { isImportable } from "./lib/importDoc";
 import { useJarvis } from "./lib/jarvis";
 import { useMiniBridge } from "./lib/mini";
 import type { ChatSummary, CodexStatus, Task, Workspace } from "./lib/types";
 
 const SIDE_KEY = "jarvis.sidebar.collapsed";
-/** Projects folded open in the sidebar. */
-const OPEN_KEY = "jarvis.projects.open";
 /** Below this width the sidebar stops being a column and opens as a drawer instead. */
 const NARROW = "(max-width: 1100px)";
 
@@ -62,7 +60,8 @@ const MID_DEFAULT = 380;
 const MID_MIN = 280;
 const PANEL_MIN = 420;
 
-const MODE_LABEL = { off: "Offline", connecting: "Connecting", live: "Listening", error: "Offline" } as const;
+/** The voice session in a word. "off" just means not talking right now: typing still works. */
+const MODE_LABEL = { off: "Ready", connecting: "Connecting…", live: "Listening", error: "Can't connect" } as const;
 
 export default function App() {
   const j = useJarvis();
@@ -121,27 +120,6 @@ export default function App() {
   useEffect(() => {
     if (projects && ws && !projects.some((p) => p.slug === ws.slug)) j.openChat(j.chatId);
   }, [projects]);
-  const [openProjects, setOpenProjects] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(OPEN_KEY) ?? "[]");
-    } catch {
-      return [];
-    }
-  });
-  const setOpen = (slug: string, open: boolean) =>
-    setOpenProjects((list) => {
-      const next = open ? [...new Set([...list, slug])] : list.filter((s) => s !== slug);
-      try {
-        localStorage.setItem(OPEN_KEY, JSON.stringify(next));
-      } catch {
-        /* not remembered this time */
-      }
-      return next;
-    });
-  // The project of the chat you're in is always unfolded.
-  useEffect(() => {
-    if (ws && !openProjects.includes(ws.slug)) setOpen(ws.slug, true);
-  }, [ws?.slug]);
   const [editProject, setEditProject] = useState<string | null>(null);
 
   // A project was saved (or deleted) on the create/edit page. A project that still exists goes back
@@ -161,22 +139,15 @@ export default function App() {
     setViewProject(slug);
     setPage("project");
   };
-  /** A chat dragged from the sidebar onto a project (or onto "Chats" to leave its project). */
-  const dropChat = (e: React.DragEvent, slug: string) => {
-    const id = e.dataTransfer.getData("application/x-jarvis-chat");
-    if (!id) return;
-    e.preventDefault();
-    if (slug) setOpen(slug, true);
-    j.moveChat(id, slug).catch((err) => j.setError(String(err)));
-  };
-  const allowDrop = (e: React.DragEvent) => e.dataTransfer.types.includes("application/x-jarvis-chat") && e.preventDefault();
   const newChatIn = (slug: string) => {
     setPage("chat");
     closePanel();
-    if (slug) setOpen(slug, true);
     j.newChat(slug);
   };
-  const looseChats = j.chats.filter((c) => !c.workspace || (projects && !projects.some((p) => p.slug === c.workspace)));
+  // The sidebar's conversation list, like Claude's: pinned chats first, then everything by last use.
+  const byRecent = [...j.chats].sort((x, y) => y.updatedAt - x.updatedAt);
+  const starred = byRecent.filter((c) => c.pinned);
+  const recents = byRecent.filter((c) => !c.pinned);
   const isMac = navigator.userAgent.includes("Mac");
   // For ducking: is Jarvis talking right now? (Read by the player on a timer, so it can't be state.)
   const speaking = useCallback(() => j.orb.mode() === "speak", [j.orb]);
@@ -198,12 +169,22 @@ export default function App() {
     />
   );
 
-  // ⌘K (Ctrl+K on Windows) jumps to search from anywhere.
+  // The standard shortcuts: ⌘K search, ⌘N new chat, ⌘, Settings (Ctrl on Windows).
+  const newChatRef = useRef(newChatIn);
+  newChatRef.current = newChatIn;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((isMac ? e.metaKey : e.ctrlKey) && e.key.toLowerCase() === "k") {
+      if (!(isMac ? e.metaKey : e.ctrlKey) || e.shiftKey || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "k") {
         e.preventDefault();
         setPage("search");
+      } else if (k === "n") {
+        e.preventDefault();
+        newChatRef.current("");
+      } else if (k === ",") {
+        e.preventDefault();
+        setShowSettings(true);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -342,7 +323,7 @@ export default function App() {
     j.setReportId(null);
     setPage("knowhow");
   }, [openTask?.id]);
-  // Whatever is open shows in the side panel, in place of the Worker tasks pane.
+  // Whatever is open shows in the side panel, in place of the Activity pane.
   const panelTask = docTask ?? reportTask;
   const closePanel = () => j.setReportId(null);
 
@@ -417,12 +398,6 @@ export default function App() {
 
   return (
     <div className={`app${ytPlaying && !ytSlot ? " has-mini" : ""}`}>
-      <div className="aura" aria-hidden="true">
-        <i />
-        <i />
-        <i />
-      </div>
-
       <header className="titlebar" data-tauri-drag-region>
         <button
           className="icon-btn side-toggle"
@@ -441,11 +416,8 @@ export default function App() {
         <div className="conn" data-tauri-drag-region>
           <span>
             <i className={`dot ${j.connection}`} />
-            Gemini {j.connection === "live" ? "Live" : MODE_LABEL[j.connection].toLowerCase()}
-          </span>
-          <span>
-            <i className={`dot ${running.length ? "busy" : "idle"}`} />
-            Codex · {running.length ? `${running.length} running` : "idle"}
+            {j.connection === "live" ? (j.micOn ? "Listening" : "Muted") : MODE_LABEL[j.connection]}
+            {running.length > 0 && ` · ${running.length} in progress`}
           </span>
           <button className="icon-btn" onClick={() => setShowSettings(true)} aria-label="Settings" title="Settings">
             <svg viewBox="0 0 24 24">
@@ -469,259 +441,58 @@ export default function App() {
             if (narrow && target.closest("button") && !target.closest("i[role=button]")) setDrawer(false);
           }}
         >
-          <button className={`search-trigger ${page === "search" ? "on" : ""}`} onClick={() => setPage("search")}>
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M10.5 4a6.5 6.5 0 0 1 5.2 10.4l4.4 4.4-1.4 1.4-4.4-4.4A6.5 6.5 0 1 1 10.5 4zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z" />
-            </svg>
-            Search
-            <kbd>{isMac ? "⌘K" : "Ctrl K"}</kbd>
-          </button>
-          <div className="chats">
-            <div className="label">
-              <button className={`label-link ${page === "projects" && !docTask ? "on" : ""}`} onClick={() => { closePanel(); setPage("projects"); }} title="All projects">
-                Projects
-              </button>
-              <button className="mini" onClick={() => { closePanel(); setEditProject(null); setPage("newproject"); }} title="Create a project">
-                + New
-              </button>
-            </div>
-            {(projects ?? []).length === 0 && <p className="side-hint">Make a project to keep its chats, memories and code fixes together.</p>}
-            {(projects ?? []).map((p) => {
-              const open = openProjects.includes(p.slug);
-              const mine = j.chats.filter((c) => c.workspace === p.slug);
-              return (
-                <div key={p.slug} className={`proj${ws?.slug === p.slug ? " current" : ""}`}>
-                  <button className="proj-head" onClick={() => setOpen(p.slug, !open)} onDragOver={allowDrop} onDrop={(e) => dropChat(e, p.slug)} aria-expanded={open} title={p.folder || p.name}>
-                    <svg className={`chev${open ? " open" : ""}`} viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="m9 6 6 6-6 6-1.4-1.4 4.6-4.6-4.6-4.6z" />
-                    </svg>
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M3 6a1 1 0 0 1 1-1h6l2 2h8a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" />
-                    </svg>
-                    <b>{p.name}</b>
-                    <i role="button" aria-label={`Open ${p.name} page`} title="Project page: instructions, files, chats" onClick={(e) => { e.stopPropagation(); showProject(p.slug); }}>
-                      ⋯
-                    </i>
-                    <i role="button" aria-label={`New chat in ${p.name}`} title={`New chat in ${p.name}`} onClick={(e) => { e.stopPropagation(); newChatIn(p.slug); }}>
-                      +
-                    </i>
-                  </button>
-                  {open && (
-                    <div className="lib nested">
-                      {mine.length === 0 && (
-                        <button className="ghost" onClick={() => newChatIn(p.slug)}>
-                          <b>+ New chat</b>
-                        </button>
-                      )}
-                      {mine.map(chatRow)}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            <div className="label">
-              Chats
-              <button className="mini" onClick={() => newChatIn("")} title="Start a conversation outside any project">
-                New
-              </button>
-            </div>
-            <div className="lib" onDragOver={allowDrop} onDrop={(e) => dropChat(e, "")}>{looseChats.map(chatRow)}</div>
-          </div>
-          <nav className="nav">
-            <div className="navgroup">
-              <div className="label">Create</div>
-            <button
-              className="navitem"
-              onClick={() => {
-                setPage("chat");
-                j.newDocument().catch((e) => j.setError(String(e)));
-              }}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M5 3h9l5 5v5.2l-2 2V9h-4V5H7v14h6.5l-2 2H5zm14.7 10.3 1.4 1.4-6.4 6.4-2.1.6.6-2.1z" />
-              </svg>
-              New document
+          {/* Like Claude's sidebar: start something, four places to go, then your conversations.
+              Everything else lives in the menu at the bottom. */}
+          <div className="sb-top">
+            <button className="sb-new" onClick={() => { closePanel(); newChatIn(""); }} title="New chat">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z" /></svg>
+              New chat
+              <kbd>{isMac ? "⌘N" : "Ctrl N"}</kbd>
             </button>
-            <button
-              className="navitem"
-              onClick={() => {
-                setPage("chat");
-                j.openFiles().catch((e) => j.setError(String(e)));
-              }}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 5a1 1 0 0 1 1-1h5l2 2h7a1 1 0 0 1 1 1v3H8.6a1 1 0 0 0-.94.66L4 20.4zm4.9 7H21l-3.2 8H5.7z" />
-              </svg>
-              Open file…
+            <button className={`sb-item ${page === "search" ? "on" : ""}`} onClick={() => setPage("search")}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 0 1 5.2 10.4l4.4 4.4-1.4 1.4-4.4-4.4A6.5 6.5 0 1 1 10.5 4zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z" /></svg>
+              Search
+              <kbd>{isMac ? "⌘K" : "Ctrl K"}</kbd>
             </button>
-            </div>
-            <div className="navgroup">
-              <div className="label">Apps</div>
-            <button
-              className={`navitem ${page === "apps" && !docTask ? "on" : ""}`}
-              onClick={() => {
-                closePanel();
-                setPage("apps");
-              }}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm11.5 0a4.500 4.500 0 1 1 0 9 4.500 4.500 0 0 1 0-9z" />
-              </svg>
-              All apps
-            </button>
-            <button
-              className={`navitem ${page === "day" && !docTask ? "on" : ""}`}
-              onClick={() => {
-                closePanel();
-                setPage("day");
-              }}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 7a5 5 0 1 1 0 10 5 5 0 0 1 0-10zM11 1h2v3h-2zm0 19h2v3h-2zM1 11h3v2H1zm19 0h3v2h-3zM4.2 5.6l1.4-1.4 2.1 2.1-1.4 1.4zm12.1 12.1 1.4-1.4 2.1 2.1-1.4 1.4zM5.6 19.8l-1.4-1.4 2.1-2.1 1.4 1.4zM17.7 7.7l-1.4-1.4 2.1-2.1 1.4 1.4z" />
-              </svg>
+            <button className={`sb-item ${page === "day" && !docTask ? "on" : ""}`} onClick={() => { closePanel(); setPage("day"); }}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7a5 5 0 1 1 0 10 5 5 0 0 1 0-10zM11 1h2v3h-2zm0 19h2v3h-2zM1 11h3v2H1zm19 0h3v2h-3zM4.2 5.6l1.4-1.4 2.1 2.1-1.4 1.4zm12.1 12.1 1.4-1.4 2.1 2.1-1.4 1.4zM5.6 19.8l-1.4-1.4 2.1-2.1 1.4 1.4zM17.7 7.7l-1.4-1.4 2.1-2.1 1.4 1.4z" /></svg>
               Today
             </button>
-            <button
-              className={`navitem ${showLibrary && !docTask ? "on" : ""}`}
-              onClick={() => {
-                closePanel();
-                setPage("library");
-              }}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 4h5v16H4zm6.5 0h4v16h-4zM17 4.7l3.6 15.6-2 .5L15 5.2z" />
-              </svg>
+            <button className={`sb-item ${showLibrary && !docTask ? "on" : ""}`} onClick={() => { closePanel(); setPage("library"); }}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h5v16H4zm6.5 0h4v16h-4zM17 4.7l3.6 15.6-2 .5L15 5.2z" /></svg>
               Library
-              {library.length > 0 && <span>{library.length}</span>}
             </button>
-            <button
-              className={`navitem ${page === "mail" && !docTask ? "on" : ""}`}
-              onClick={() => {
-                closePanel();
-                setPage("mail");
-              }}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M3 5h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm1 2v.5l8 5 8-5V7zm16 2.9-8 5-8-5V17h16z" />
-              </svg>
-              Mail
+            <button className={`sb-item ${(page === "projects" || page === "project" || page === "newproject") && !docTask ? "on" : ""}`} onClick={() => { closePanel(); setPage("projects"); }}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6a1 1 0 0 1 1-1h6l2 2h8a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" /></svg>
+              Projects
             </button>
-            <button
-              className={`navitem ${page === "calendar" && !docTask ? "on" : ""}`}
-              onClick={() => {
-                closePanel();
-                setPage("calendar");
-              }}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M7 2h2v2h6V2h2v2h3a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3zM5 9v10h14V9zm2 2h4v4H7z" />
-              </svg>
-              Calendar
-            </button>
-            <button
-              className={`navitem ${page === "drive" && !docTask ? "on" : ""}`}
-              onClick={() => {
-                closePanel();
-                setPage("drive");
-              }}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M8.2 3h7.6l6.2 10.7-3.8 6.3H5.8L2 13.7zm.9 2L4.3 13.7 6.6 17.9 11.4 9.6zm6.1 0H10l5.6 9.7h5zM8 16l-.1.1.9 1.9h8.6l1.1-1.9z" />
-              </svg>
-              Drive
-            </button>
-            <button
-              className={`navitem ${page === "youtube" && !docTask ? "on" : ""}`}
-              onClick={() => {
-                closePanel();
-                setPage("youtube");
-              }}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M21.6 7.2a2.5 2.5 0 0 0-1.8-1.8C18.2 5 12 5 12 5s-6.2 0-7.8.4A2.5 2.5 0 0 0 2.4 7.2C2 8.8 2 12 2 12s0 3.2.4 4.8a2.5 2.5 0 0 0 1.8 1.8C5.8 19 12 19 12 19s6.2 0 7.8-.4a2.5 2.5 0 0 0 1.8-1.8c.4-1.6.4-4.8.4-4.8s0-3.2-.4-4.8zM10 15V9l5.2 3z" />
-              </svg>
-              YouTube
-            </button>
-            <button
-              className={`navitem ${page === "memory" && !docTask ? "on" : ""}`}
-              onClick={() => {
-                closePanel();
-                setPage("memory");
-              }}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 2a7 7 0 0 0-4 12.7V18h8v-3.3A7 7 0 0 0 12 2zm-3 18h6v2H9z" />
-              </svg>
-              Memory{ws ? ` · ${ws.name}` : ""}
-            </button>
-            </div>
-            <div className="navgroup">
-              <div className="label">Automate</div>
-            <button
-              className={`navitem ${page === "briefings" && !docTask ? "on" : ""}`}
-              onClick={() => {
-                closePanel();
-                setPage("briefings");
-              }}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zm0 2a7 7 0 1 0 0 14 7 7 0 0 0 0-14zm1 2v4.6l3.2 1.9-1 1.7L11 12.7V7z" />
-              </svg>
-              Briefings
-            </button>
-            <button
-              className={`navitem ${page === "routines" && !docTask ? "on" : ""}`}
-              onClick={() => {
-                closePanel();
-                setPage("routines");
-              }}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-2.1-5L14 10h7V3l-2.6 2.6A9 9 0 0 0 12 3z" />
-              </svg>
-              Routines
-            </button>
-            <button
-              className={`navitem ${page === "knowhow" && !docTask ? "on" : ""}`}
-              onClick={() => {
-                closePanel();
-                setPage("knowhow");
-              }}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="m12 2 2.9 6.2 6.6.8-4.9 4.6 1.3 6.6L12 16.9l-5.9 3.3 1.3-6.6-4.9-4.6 6.6-.8z" />
-              </svg>
-              Know-how
-            </button>
-            </div>
+          </div>
+          <div className="chats sb-chats">
+            {starred.length > 0 && (
+              <>
+                <div className="sb-head">Starred</div>
+                <div className="lib">{starred.map(chatRow)}</div>
+              </>
+            )}
+            <div className="sb-head">Recents</div>
+            {recents.length === 0 && <p className="side-hint">Your conversations show up here.</p>}
+            <div className="lib">{recents.map(chatRow)}</div>
+          </div>
+          <div className="sb-foot">
             {!setupDone && (
-              <button className="navitem setup-nav" onClick={() => setShowSetup(true)}>
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm-1 5v7h2V7zm0 9v2h2v-2z" />
-                </svg>
+              <button className="sb-item setup-nav" onClick={() => setShowSetup(true)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm-1 5v7h2V7zm0 9v2h2v-2z" /></svg>
                 Finish setting up
               </button>
             )}
-          </nav>
-          <div className="shortcuts">
-            <div className="label">Shortcuts</div>
-            <div className="keys">
-              <span>
-                <kbd>⌥</kbd>
-                <kbd>Space</kbd>
-              </span>
-              <span>Talk / mute</span>
-              <span>
-                <kbd>⌥</kbd>
-                <kbd>J</kbd>
-              </span>
-              <span>Show / hide</span>
-              <span>
-                <kbd>⌥</kbd>
-                <kbd>.</kbd>
-              </span>
-              <span>Stop speaking</span>
-            </div>
+            <SidebarMenu
+              name={j.settings?.userName?.trim() || "You"}
+              page={page}
+              onGo={(to) => { closePanel(); setPage(to); }}
+              onNewDocument={() => { setPage("chat"); j.newDocument().catch((e) => j.setError(String(e))); }}
+              onOpenFile={() => { setPage("chat"); j.openFiles().catch((e) => j.setError(String(e))); }}
+              onSettings={() => setShowSettings(true)}
+            />
           </div>
         </aside>
 
@@ -778,7 +549,7 @@ export default function App() {
             project={(projects ?? []).find((p) => p.slug === viewProject)!}
             chats={j.chats}
             onChanged={() => invoke<Workspace[]>("list_workspaces").then((l) => { setProjects(l); window.dispatchEvent(new Event("jarvis-workspace")); }).catch(() => {})}
-            onOpenChat={(id) => { setOpen(viewProject!, true); setPage("chat"); closePanel(); j.openChat(id); }}
+            onOpenChat={(id) => { setPage("chat"); closePanel(); j.openChat(id); }}
             onNewChat={() => newChatIn(viewProject!)}
             onEdit={() => { setEditProject(viewProject); setPage("newproject"); }}
             onClose={() => setPage("projects")}
@@ -932,24 +703,33 @@ export default function App() {
             <div className="transcript" ref={transcriptRef} aria-live="polite">
               {j.messages.length === 0 && (
                 <div className="empty">
-                  <p>Ask for anything that needs research, for example:</p>
+                  <p>Talk or type. For example:</p>
                   <ul>
-                    <li>“Research the best vector databases for a small startup. Deep dive.”</li>
-                    <li>“Quick check: what's the latest stable version of Tauri?”</li>
-                    <li>“Make me an image of a minimalist mountain logo in navy and gold.”</li>
-                    <li>“Remember that I prefer sources from the last 12 months.”</li>
-                    <li>Select some text in any app, then: “Explain this” or “Rewrite this more politely.”</li>
-                    <li>Hit an error in your code: “Look at this error and fix it in the Jarvis project.”</li>
-                    <li>Press ⌥⇧Space to type a command instead of speaking.</li>
+                    <li>“Research the best vector databases for a small startup.”</li>
+                    <li>“Make an image of a minimalist mountain logo in navy and gold.”</li>
+                    <li>“Write a one-page proposal for a website redesign.”</li>
                   </ul>
                 </div>
               )}
-              {j.messages.map((m) => (
-                <div key={m.id} className={`msg ${m.who}`}>
-                  <div className="who">{m.who === "notice" ? "worker" : m.who}</div>
-                  {m.who === "tool" ? <div className="chip">{m.text}</div> : <p>{m.text}</p>}
-                </div>
-              ))}
+              {j.messages.map((m) => {
+                if (m.who === "tool") {
+                  // Tool lines read as plain progress notes; look-ups aren't shown.
+                  const line = toolLine(m.text);
+                  if (!line) return null;
+                  return (
+                    <div key={m.id} className={`msg tool${line.error ? " failed" : ""}`}>
+                      <div className="who" />
+                      <p className="note">{line.text}</p>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={m.id} className={`msg ${m.who}`}>
+                    <div className="who">{m.who === "notice" ? "Update" : m.who === "you" ? "You" : "Jarvis"}</div>
+                    <p>{m.who === "notice" ? noticeLine(m.text) : m.text}</p>
+                  </div>
+                );
+              })}
             </div>
 
             {j.attachments.length > 0 && (
@@ -963,7 +743,7 @@ export default function App() {
                     </button>
                   </div>
                 ))}
-                <span className="muted small">Jarvis can see these and will pass them to the image worker.</span>
+                <span className="muted small">Jarvis can see these and will use them for images.</span>
               </div>
             )}
 
@@ -987,13 +767,7 @@ export default function App() {
                     className="typebox"
                     value={typed}
                     onChange={(e) => setTyped(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Tab" && e.shiftKey) {
-                        e.preventDefault();
-                        setMode(nextMode(getMode()));
-                      }
-                    }}
-                    placeholder="Type instead of speaking…"
+                    placeholder="Ask Jarvis…"
                   />
                   {typed.trim() ? (
                     <button type="submit" className="csend" aria-label="Send" title="Send (Enter)">
@@ -1003,7 +777,7 @@ export default function App() {
                     </button>
                   ) : (
                     j.connection !== "off" && (
-                      <button type="button" className="csend stop" onClick={j.disconnect} aria-label="End session" title="End session">
+                      <button type="button" className="csend stop" onClick={j.disconnect} aria-label="Stop listening" title="Stop listening">
                         <svg viewBox="0 0 24 24">
                           <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 2a8 8 0 1 1 0 16 8 8 0 0 1 0-16zM9 9h6v6H9z" />
                         </svg>
@@ -1029,12 +803,11 @@ export default function App() {
                     {j.meeting ? <path d="M7 7h10v10H7z" /> : <path d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm0-5C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16z" />}
                   </svg>
                 </button>
-                <ModePicker />
                 <span className="grow" />
                 <span className="cstat" role="status">
                   <i className={`dot ${j.connection}`} />
                   {j.connection === "live" ? (j.micOn ? "Listening" : "Muted") : MODE_LABEL[j.connection]}
-                  {running.length > 0 && <i className="spin" aria-label={`${running.length} worker${running.length > 1 ? "s" : ""} running`} title={`${running.length} running`} />}
+                  {running.length > 0 && <i className="spin" aria-label={`${running.length} in progress`} title={`${running.length} in progress`} />}
                 </span>
               </div>
             </form>
@@ -1087,7 +860,7 @@ export default function App() {
           page === "chat" && (
             <aside className="tasks">
               <header>
-                <div className="label">Worker tasks</div>
+                <div className="label">Activity</div>
                 <div className="seg" role="group" aria-label="Filter tasks">
                   <button className={filter === "active" ? "on" : ""} onClick={() => setFilter("active")}>
                     Recent
@@ -1097,7 +870,7 @@ export default function App() {
                   </button>
                 </div>
               </header>
-              {shown.length === 0 && <p className="muted small">No tasks in this chat yet. When you ask for research, Codex picks it up here and you can watch each step.</p>}
+              {shown.length === 0 && <p className="muted small">Nothing yet. Research, images and documents you ask for in this chat show up here as they're made.</p>}
               {shown.map((w) => (
                 <TaskCard key={w.key} task={w.latest} item={w} onOpen={j.setReportId} />
               ))}

@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_RULE, RISK_INFO, ruleFor, type Risk, type Rule } from "../lib/approvals";
+import { ruleFor, type Risk, type Rule } from "../lib/approvals";
 import { LANGUAGES } from "../lib/languages";
 import { listLiveModels } from "../lib/live";
 import VideoSettings from "./VideoSettings";
@@ -146,7 +146,7 @@ export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }
     setLoginBusy(false);
   };
   const signOut = async () => {
-    if (!(await confirm("Research and code fixes stop working until you sign in again.", { title: "Sign out of Codex?", kind: "warning", okLabel: "Sign out" }))) return;
+    if (!(await confirm("Research and code fixes stop working until you sign in again.", { title: "Sign out of ChatGPT?", kind: "warning", okLabel: "Sign out" }))) return;
     setCodexModels(null);
     await applyStatus(await invoke<CodexStatus>("codex_logout"));
   };
@@ -176,7 +176,7 @@ export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }
     s.codexReasoning === "auto"
       ? "Quick tasks think Low, deep dives think High."
       : s.codexReasoning === "default"
-        ? `Uses your Codex setting${codexModels?.defaultReasoning ? ` (${levelName(codexModels.defaultReasoning)})` : ""}.`
+        ? `Uses your default${codexModels?.defaultReasoning ? ` (${levelName(codexModels.defaultReasoning)})` : ""}.`
         : levels.find((l) => l.effort === s.codexReasoning)?.description ?? "";
 
   useEffect(() => {
@@ -208,10 +208,17 @@ export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }
         if (JSON.stringify(edited[k]) !== JSON.stringify(before[k])) merged[k] = edited[k];
       }
       await invoke("save_settings", { settings: merged });
-      // Starts or stops listening for "hey Jarvis", and picks up a changed microphone.
-      await invoke("wake_word_set", { enabled: !!s.wakeWord });
-      setSaved("Saved");
       onSaved();
+      // Starts or stops listening for "hey Jarvis", and picks up a changed microphone. Settings are
+      // already saved by now; if listening can't start (a Bluetooth mic), keep the window open and
+      // say why rather than reporting a failed save.
+      try {
+        await invoke("wake_word_set", { enabled: !!s.wakeWord });
+      } catch (e) {
+        setSaved(`Saved. ${e}`);
+        return;
+      }
+      setSaved("Saved");
       onClose();
     } catch (e) {
       setSaved(`Could not save: ${e}`);
@@ -288,9 +295,9 @@ export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }
           />
           <div className="row">
             <div>
-              <label htmlFor="model">Live model</label>
+              <label htmlFor="model">Voice model</label>
               <select id="model" value={s.geminiModel} onChange={(e) => set("geminiModel", e.target.value)}>
-                <option value="">Auto (newest)</option>
+                <option value="">Automatic</option>
                 {models.map((m) => (
                   <option key={m} value={m}>
                     {m}
@@ -377,14 +384,14 @@ export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }
             <i />
             <span>
               {installing
-                ? installMsg || "Installing Codex…"
+                ? installMsg || "Setting up research…"
                 : checking
-                  ? "Checking Codex…"
+                  ? "Checking…"
                   : loginBusy
                     ? "Waiting for you to finish signing in…"
                     : codex
                       ? codex.loggedIn
-                        ? `${codex.message || "Signed in"} · Codex ${codex.version.replace(/^codex-cli\s*/i, "")}`
+                        ? `${codex.message || "Signed in"}`
                         : codex.found
                           ? "Not signed in to ChatGPT"
                           : codex.message
@@ -434,11 +441,11 @@ export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }
               {loginDevice && loginLines.length > 0 && <pre className="approval-detail">{loginLines.join("\n")}</pre>}
             </div>
           )}
-          <label htmlFor="codexPath">Codex path (optional)</label>
+          <label htmlFor="codexPath">Research tool location (optional)</label>
           <input id="codexPath" value={s.codexPath} placeholder="Found automatically, e.g. /opt/homebrew/bin/codex" onChange={(e) => set("codexPath", e.target.value)} />
           <div className="row">
             <div>
-              <label htmlFor="codexModel">Codex model</label>
+              <label htmlFor="codexModel">Research model</label>
               <select id="codexModel" value={s.codexModel} onChange={(e) => pickModel(e.target.value)}>
                 <option value="">
                   Codex default
@@ -455,10 +462,10 @@ export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }
               </select>
             </div>
             <div>
-              <label htmlFor="reasoning">Thinking</label>
+              <label htmlFor="reasoning">Effort</label>
               <select id="reasoning" value={s.codexReasoning || "auto"} onChange={(e) => set("codexReasoning", e.target.value)}>
-                <option value="auto">Auto (by task depth)</option>
-                <option value="default">Codex default</option>
+                <option value="auto">Automatic</option>
+                <option value="default">Default</option>
                 {levels.map((l) => (
                   <option key={l.effort} value={l.effort}>
                     {levelName(l.effort)}
@@ -472,11 +479,11 @@ export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }
             {reasoningHint}
             {codexModels?.error ? ` ${codexModels.error}` : ""}
           </p>
-          <label htmlFor="dir">Research folder</label>
+          <label htmlFor="dir">Save work in</label>
           <input id="dir" value={s.researchDir} placeholder="~/Jarvis" onChange={(e) => set("researchDir", e.target.value)} />
           <label className="check">
             <input id="web" type="checkbox" checked={s.webSearch} onChange={(e) => set("webSearch", e.target.checked)} />
-            Let Codex search the web
+            Allow web searches
           </label>
           </section>
           <section hidden={!show("google")}>
@@ -553,27 +560,17 @@ export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }
               </button>
             )}
           </div>
-          <p className="hint">Jarvis looks only when you ask ("explain this", "fix this error"), never in the background. Text you select is sent to Gemini and, for code fixes, to Codex.</p>
-          <label>When Jarvis wants to…</label>
-          <div className="rule-table">
-            {(["write", "send"] as Risk[]).map((risk) => (
-              <div className="rule-row" key={risk}>
-                <div>
-                  <b>{RISK_INFO[risk].label}</b>
-                  <small>{RISK_INFO[risk].hint}</small>
-                </div>
-                <select aria-label={RISK_INFO[risk].label} value={ruleFor(risk, s)} onChange={(e) => setRule(risk, e.target.value as Rule)}>
-                  {RISK_INFO[risk].rules.map((r) => (
-                    <option key={r} value={r}>
-                      {r === "ask" ? "Ask me" : r === "auto" ? "Do it" : "Never"}
-                      {r === DEFAULT_RULE[risk] ? " (default)" : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ))}
-          </div>
-          <p className="hint">Every approval, rejection and automatic action is logged in audit.jsonl in your Jarvis folder.</p>
+          <p className="hint">Jarvis looks only when you ask ("explain this", "fix this error"), never in the background. Text you select is sent to Google (Gemini) and, for code fixes, to OpenAI (Codex).</p>
+          <label className="check">
+            <input id="askBeforeChanges" type="checkbox" checked={ruleFor("write", s) !== "auto"} onChange={(e) => setRule("write", e.target.checked ? "ask" : "auto")} />
+            Ask before Jarvis changes anything
+          </label>
+          <p className="hint">When this is off, Jarvis makes documents, images and code changes on its own. It always asks before sending email or invitations, deleting, buying, or using other apps.</p>
+          <label className="check">
+            <input id="neverSend" type="checkbox" checked={ruleFor("send", s) === "never"} onChange={(e) => setRule("send", e.target.checked ? "never" : "ask")} />
+            Never send email or invitations for me
+          </label>
+          <p className="hint">Jarvis keeps a record of everything it asked about or did on its own, in the activity log in your Jarvis folder.</p>
           </section>
           </div>
 

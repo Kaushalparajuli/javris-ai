@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
+import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { OrbMode } from "../lib/types";
 
 interface Props {
@@ -32,8 +33,10 @@ const VERT = `
     gl_PointSize = (1.6 + d * 8.0) * (3.6 / -mv.z) * uPx;
   }`;
 
+// One point per vertex (the geometry is de-duplicated), so uDup stands in for the copies a
+// non-indexed sphere used to draw on top of each other: same brightness, a sixth of the work.
 const FRAG_POINTS = `
-  uniform vec3 uA; uniform vec3 uB; uniform float uLevel;
+  uniform vec3 uA; uniform vec3 uB; uniform float uLevel; uniform float uDup;
   varying float vD; varying vec3 vN; varying vec3 vView;
   void main() {
     float r = length(gl_PointCoord - 0.5);
@@ -41,7 +44,8 @@ const FRAG_POINTS = `
     float rim = pow(1.0 - abs(dot(vN, vView)), 1.6);
     vec3 col = mix(uA, uB, clamp(vD * 3.0 + 0.5, 0.0, 1.0));
     float a = smoothstep(0.5, 0.0, r) * (0.12 + rim * 0.55 + uLevel * 0.25);
-    gl_FragColor = vec4(col * (0.7 + rim * 0.6), a);
+    float a2 = min(1.0, a * uDup);
+    gl_FragColor = vec4(min(col * (0.7 + rim * 0.6) * a * uDup / max(a2, 1e-4), vec3(1.0)), a2);
   }`;
 
 const FRAG_SHELL = `
@@ -52,34 +56,71 @@ const FRAG_SHELL = `
     gl_FragColor = vec4(mix(uB, uA, rim), rim * (0.4 + uLevel * 0.5));
   }`;
 
-/** 3D voice sphere: particle skin + glass shell + glowing core, driven by live audio level. */
+/** Below this input level a listening orb barely moves, so it's drawn at a lower rate. */
+const QUIET = 0.05;
+/** Frame gap while listening quietly: about 24 fps. */
+const QUIET_GAP_MS = 1000 / 24;
+/** How often a resting orb checks whether it should wake. */
+const POLL_MS = 200;
+
+/**
+ * A sphere's vertices with each shared corner kept once (IcosahedronGeometry repeats it per
+ * face). `points` drops the index too: Points draws once per index entry, which would bring
+ * the repeats back.
+ */
+function sphere(detail: number, points = false) {
+  const g = new THREE.IcosahedronGeometry(1, detail);
+  const copies = g.attributes.position.count;
+  g.deleteAttribute("normal");
+  g.deleteAttribute("uv");
+  const merged = mergeVertices(g, 1e-5);
+  g.dispose();
+  if (points) merged.setIndex(null);
+  return { geometry: merged, dup: copies / merged.attributes.position.count };
+}
+
+/**
+ * 3D voice sphere: particle skin + glass shell + glowing core, driven by live audio level.
+ *
+ * Draws only while something is happening: full rate when speaking or thinking, about 24 fps
+ * while listening quietly, and not at all once it has settled at rest (it then checks five
+ * times a second whether to wake). Stops while the window is hidden; one still frame with
+ * reduced motion.
+ */
 export default function Orb({ source, size = 280 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
+  const live = useRef<{ resize(n: number): void } | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
     const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
     const px = Math.min(devicePixelRatio, 2);
-    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    // Tiny round sprites and soft rims gain nothing from MSAA at 2x pixel ratio.
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false, powerPreference: "low-power" });
     renderer.setPixelRatio(px);
-    renderer.setSize(size, size, false);
+    renderer.setSize(sizeRef.current, sizeRef.current, false);
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
     camera.position.z = 4.2;
 
+    const skin = sphere(18, true);
+    const glass = sphere(10);
     const uniforms = {
       uTime: { value: 0 },
       uLevel: { value: 0.1 },
       uPx: { value: px },
+      uDup: { value: skin.dup },
       uA: { value: new THREE.Color(...(COLORS.idle[0] as [number, number, number])) },
       uB: { value: new THREE.Color(...(COLORS.idle[1] as [number, number, number])) },
     };
     const additive = { uniforms, vertexShader: VERT, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending };
-    const pts = new THREE.Points(new THREE.IcosahedronGeometry(1, 22), new THREE.ShaderMaterial({ ...additive, fragmentShader: FRAG_POINTS }));
-    const shell = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 20), new THREE.ShaderMaterial({ ...additive, fragmentShader: FRAG_SHELL }));
+    const pts = new THREE.Points(skin.geometry, new THREE.ShaderMaterial({ ...additive, fragmentShader: FRAG_POINTS }));
+    const shell = new THREE.Mesh(glass.geometry, new THREE.ShaderMaterial({ ...additive, fragmentShader: FRAG_SHELL }));
     shell.scale.setScalar(0.96);
 
-    const core = new THREE.Mesh(new THREE.SphereGeometry(0.34, 48, 48), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 }));
+    const core = new THREE.Mesh(new THREE.SphereGeometry(0.34, 32, 32), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 }));
     const glowCanvas = document.createElement("canvas");
     glowCanvas.width = glowCanvas.height = 128;
     const g = glowCanvas.getContext("2d")!;
@@ -89,8 +130,9 @@ export default function Orb({ source, size = 280 }: Props) {
     grad.addColorStop(1, "rgba(120,200,255,0)");
     g.fillStyle = grad;
     g.fillRect(0, 0, 128, 128);
+    const glowTexture = new THREE.CanvasTexture(glowCanvas);
     const glow = new THREE.Sprite(
-      new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(glowCanvas), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }),
+      new THREE.SpriteMaterial({ map: glowTexture, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }),
     );
 
     scene.add(shell, pts, glow, core);
@@ -101,33 +143,102 @@ export default function Orb({ source, size = 280 }: Props) {
     let level = 0.1;
     let t = 0;
     let raf = 0;
+    let poll = 0;
+    let last = 0;
 
-    const frame = () => {
-      const mode = source.mode();
-      const input = source.level();
-      const target =
-        mode === "speak" ? 0.25 + input * 0.9 : mode === "think" ? 0.28 : mode === "listen" ? 0.1 + input * 0.8 : 0.06;
-      level += (target - level) * 0.18;
-      if (!reduce) t += 0.016;
+    const targetOf = (mode: OrbMode, input: number) =>
+      mode === "speak" ? 0.25 + input * 0.9 : mode === "think" ? 0.28 : mode === "listen" ? 0.1 + input * 0.8 : 0.06;
+
+    /** Move everything `dt` seconds towards where `mode` wants it (all the way with reduced motion). */
+    const step = (dt: number, mode: OrbMode, input: number) => {
+      const target = targetOf(mode, input);
+      // The original per-frame easing (at 60 fps), made independent of the frame rate.
+      const kLevel = reduce ? 1 : 1 - Math.pow(1 - 0.18, dt * 60);
+      const kColor = reduce ? 1 : 1 - Math.pow(1 - 0.06, dt * 60);
+      level += (target - level) * kLevel;
+      if (!reduce) t += dt;
       uniforms.uTime.value = t;
       uniforms.uLevel.value = level;
       const [a, b] = COLORS[mode];
-      uniforms.uA.value.lerp(tmpA.setRGB(a[0], a[1], a[2]), 0.06);
-      uniforms.uB.value.lerp(tmpB.setRGB(b[0], b[1], b[2]), 0.06);
+      uniforms.uA.value.lerp(tmpA.setRGB(a[0], a[1], a[2]), kColor);
+      uniforms.uB.value.lerp(tmpB.setRGB(b[0], b[1], b[2]), kColor);
       core.material.color.copy(uniforms.uA.value).lerp(white, 0.5);
       glow.material.color.copy(uniforms.uA.value);
       core.scale.setScalar(0.85 + level * 0.6);
       glow.scale.setScalar(1.3 + level * 1.4);
       pts.rotation.y = shell.rotation.y = t * 0.25;
       pts.rotation.x = shell.rotation.x = Math.sin(t * 0.3) * 0.3;
-      renderer.render(scene, camera);
-      raf = requestAnimationFrame(frame);
+      const near = (c: THREE.Color, v: number[]) => Math.abs(c.r - v[0]) + Math.abs(c.g - v[1]) + Math.abs(c.b - v[2]) < 0.004;
+      return Math.abs(target - level) < 0.002 && near(uniforms.uA.value, a) && near(uniforms.uB.value, b);
     };
-    frame();
+
+    const draw = () => renderer.render(scene, camera);
+
+    /** Resting: no frames, just a cheap check for a change of mode. */
+    const rest = (mode: OrbMode) => {
+      window.clearInterval(poll);
+      poll = window.setInterval(() => {
+        if (source.mode() !== mode) wake();
+      }, POLL_MS);
+    };
+
+    const tick = (now: number) => {
+      raf = 0;
+      const mode = source.mode();
+      const input = source.level();
+      const quiet = mode === "idle" || (mode === "listen" && input < QUIET);
+      if (last && quiet && now - last < QUIET_GAP_MS - 2) {
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      const dt = last ? Math.min((now - last) / 1000, 0.1) : 1 / 60;
+      last = now;
+      const settled = step(dt, mode, input);
+      draw();
+      if (document.hidden) return; // `visibilitychange` wakes it
+      if (reduce || (mode === "idle" && settled)) return rest(mode);
+      raf = requestAnimationFrame(tick);
+    };
+
+    function wake() {
+      window.clearInterval(poll);
+      poll = 0;
+      if (!raf && !document.hidden) {
+        last = 0;
+        raf = requestAnimationFrame(tick);
+      }
+    }
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+        window.clearInterval(poll);
+        poll = 0;
+      } else wake();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    live.current = {
+      resize(n: number) {
+        renderer.setSize(n, n, false);
+        draw(); // resizing clears the canvas: redraw now so a resting orb doesn't vanish
+        wake();
+      },
+    };
+
+    // First frame straight away (also the only one with reduced motion), then the loop.
+    step(1 / 60, source.mode(), source.level());
+    draw();
+    wake();
 
     return () => {
+      live.current = null;
+      document.removeEventListener("visibilitychange", onVisibility);
       cancelAnimationFrame(raf);
+      window.clearInterval(poll);
       renderer.dispose();
+      glowTexture.dispose();
       scene.traverse((o) => {
         const m = o as THREE.Mesh;
         m.geometry?.dispose();
@@ -135,7 +246,12 @@ export default function Orb({ source, size = 280 }: Props) {
         mat?.dispose();
       });
     };
-  }, [source, size]);
+  }, [source]);
+
+  // A new size resizes the one renderer; nothing is rebuilt.
+  useEffect(() => {
+    live.current?.resize(size);
+  }, [size]);
 
   return <canvas ref={canvasRef} className="orb" style={{ width: size, height: size }} aria-hidden="true" />;
 }

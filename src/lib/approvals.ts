@@ -8,7 +8,6 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import { getMode } from "./mode";
 import type { Settings } from "./types";
 
 export type Risk = "read" | "search" | "write" | "send" | "delete" | "purchase" | "deploy" | "control";
@@ -37,17 +36,12 @@ export const DEFAULT_RULE: Record<Risk, Rule> = {
 };
 
 /**
- * The rule that applies right now: the Settings rule for this kind of action, adjusted by the mode
- * under the prompt box. Manual asks for every change; Auto lets file and document changes through;
- * Show lets nothing that changes anything through. A rule of "never" always holds.
+ * The rule that applies right now: exactly what Settings says for this kind of action. (There used
+ * to be a separate Show / Auto / Manual mode that could override Settings without saying so; the
+ * one "Ask before Jarvis changes anything" switch in Settings replaces it.)
  */
 export function effectiveRule(risk: Risk, settings: Settings | null): Rule {
-  const base = ruleFor(risk, settings);
-  if (risk === "read" || risk === "search" || base === "never") return base;
-  const mode = getMode();
-  if (mode === "show") return "never";
-  if (mode === "manual") return "ask";
-  return risk === "write" ? "auto" : base;
+  return ruleFor(risk, settings);
 }
 
 /** The rule in force for a kind of action. Anything the setting can't allow falls back to asking. */

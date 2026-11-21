@@ -1,5 +1,5 @@
 // Voice tools that live in their own files. Each module declares its tools for Gemini, names the
-// ones that change something (Show mode holds those back), and runs its own calls. jarvis.ts asks
+// ones that change something, and runs its own calls. jarvis.ts asks
 // these modules about any tool name it doesn't handle itself.
 
 import type { Risk } from "../approvals";

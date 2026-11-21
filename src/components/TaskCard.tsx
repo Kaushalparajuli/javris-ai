@@ -34,10 +34,21 @@ function saveToDrive(task: Task, set: (d: { state: "busy" | "done" | "error"; li
     .catch((e) => set({ state: "error", error: String(e) }));
 }
 
+const KIND_ICON: Record<string, string> = {
+  research: "M10.5 4a6.5 6.5 0 0 1 5.2 10.4l4.4 4.4-1.4 1.4-4.4-4.4A6.5 6.5 0 1 1 10.5 4zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z",
+  document: "M6 2h8l6 6v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm7 1.5V9h5.5zM8 13h8v2H8zm0 4h8v2H8z",
+  image: "M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm1 2v8.6l3.5-3.5 3 3 4-4L19 14.6V7zm4 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z",
+  video: "M4 6h11a1 1 0 0 1 1 1v3.5l5-3v9l-5-3V17a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z",
+  site: "M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zm-1.9 2.3A7 7 0 0 0 5.1 11h3a14 14 0 0 1 2-5.7zm3.8 0A14 14 0 0 1 15.9 11h3a7 7 0 0 0-5-5.7zM10.1 11h3.8A12 12 0 0 0 12 5.6 12 12 0 0 0 10.1 11zm-5 2a7 7 0 0 0 5 5.7A14 14 0 0 1 8.1 13zm5 0A12 12 0 0 0 12 18.4a12 12 0 0 0 1.9-5.4zm5.8 0a14 14 0 0 1-2 5.7 7 7 0 0 0 5-5.7z",
+  code: "m8.6 7.4 1.4 1.4L6.8 12l3.2 3.2-1.4 1.4L4 12zm6.8 0L20 12l-4.6 4.6-1.4-1.4 3.2-3.2-3.2-3.2z",
+  browser: "M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zm0 2a7 7 0 1 0 0 14 7 7 0 0 0 0-14z",
+  slides: "M3 4h18v2h-1v10H4V6H3zm3 2v8h12V6zm5 11h2v2l2 2h-2.6L12 19.6 10.6 21H8l2-2z",
+};
+
 /**
- * One piece of work in the tasks pane. With `item`, the card stands for the whole item (a video, a
- * site, a document and all its edits): it shows the item's name, the latest run's progress, and
- * the earlier runs as a short history.
+ * One piece of work in the Activity pane, as a compact row: a thumbnail or icon, the name, and one
+ * line of status. Running work adds a thin progress bar and the current step. Opening it shows the
+ * full result and summary in the side panel; Finder, Drive and Stop appear on hover.
  */
 export default function TaskCard({ task, onOpen, item }: { task: Task; onOpen: (id: number) => void; item?: WorkItem }) {
   const [now, setNow] = useState(Date.now());
@@ -50,22 +61,33 @@ export default function TaskCard({ task, onOpen, item }: { task: Task; onOpen: (
     return () => clearInterval(i);
   }, [running]);
 
-  const steps = task.steps.slice(-6);
   const doneSteps = task.steps.filter((s) => s.done).length;
-  const progress = running ? Math.min(92, 8 + doneSteps * 7) : 100;
+  const progress = Math.min(92, 8 + doneSteps * 7);
+  const step = [...task.steps].reverse().find((s) => !s.done) ?? task.steps[task.steps.length - 1];
   const openId = (!running && item?.open?.id) || task.id;
   const earlier = item ? item.runs.filter((r) => r.id !== task.id).reverse() : [];
+  const kind = item?.kind === "video" || item?.kind === "site" ? item.kind : task.kind;
   const kindLabel =
-    item?.kind === "video" ? "video" : item?.kind === "site" ? "website" : task.kind === "image" ? "image" : task.kind === "document" ? "document" : task.kind === "browser" ? "browser" : task.kind === "code" ? "code" : task.kind === "skill" ? "know-how" : task.kind === "slides" ? "slides" : task.depth === "quick" ? "quick" : "deep dive";
+    kind === "video" ? "Video" : kind === "site" ? "Website" : kind === "image" ? "Image" : kind === "document" ? "Document" : kind === "browser" ? "Web task" : kind === "code" ? "Code" : kind === "skill" ? "Saved method" : kind === "slides" ? "Slides" : task.depth === "quick" ? "Quick research" : "Research";
   const images = item && task.kind === "image" ? item.images : task.images;
+  const thumb = images[0];
+  const status = running
+    ? `${step?.label ?? "Starting…"} · ${elapsed(task, now)}`
+    : check
+      ? CHECK_PILL[task.verify as "running" | "passed" | "failed"]
+      : task.status === "done"
+        ? `${kindLabel} · ${clock(task.finishedAt ?? task.startedAt)}`
+        : `${PILL[task.status]}${task.error ? ` · ${task.error}` : ""}`;
+  const canDrive = task.status === "done" && (task.kind === "document" || task.kind === "research" || task.kind === "browser") && !task.routine;
 
   return (
-    // The whole card opens the task in the side panel; its own buttons stop the click there.
+    // The whole row opens the work in the side panel; its own buttons stop the click there.
     <article
-      className={`task ${running ? "live" : ""} ${task.status}`}
+      className={`task compact ${running ? "live" : ""} ${task.status}${check && task.verify === "failed" ? " failed" : ""}`}
       role="button"
       tabIndex={0}
       aria-label={`Open ${item?.title ?? task.title}`}
+      title={task.summary || undefined}
       onClick={() => onOpen(openId)}
       onKeyDown={(e) => {
         if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
@@ -74,90 +96,59 @@ export default function TaskCard({ task, onOpen, item }: { task: Task; onOpen: (
         }
       }}
     >
-      <div className="task-top">
-        <h3>{item?.title ?? task.title}</h3>
-        <span className={`pill ${check ? (task.verify === "running" ? "running" : task.verify === "failed" ? "failed" : "done") : task.status}`}>
-          {check ? CHECK_PILL[task.verify as "running" | "passed" | "failed"] : PILL[task.status]}
-          {!check && !running && task.status === "done" ? ` · ${elapsed(task, now)}` : ""}
-        </span>
+      <div className="tc-row">
+        <div className="tc-icon">
+          {thumb ? (
+            <ImageThumb path={thumb} className="tc-thumb" alt="" />
+          ) : (
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d={KIND_ICON[kind] ?? KIND_ICON.research} />
+            </svg>
+          )}
+        </div>
+        <div className="tc-text">
+          <h3>{item?.title ?? task.title}</h3>
+          <div className="tc-status">
+            {!running && task.status === "done" && !check && <i className="tc-dot done" aria-hidden="true" />}
+            <span>{status}</span>
+          </div>
+        </div>
+        <div className="tc-actions" onClick={(e) => e.stopPropagation()}>
+          {running && (
+            <button title="Stop" aria-label="Stop" onClick={() => invoke("cancel_task", { id: task.id }).catch(() => {})}>
+              <svg viewBox="0 0 24 24"><path d="M7 7h10v10H7z" /></svg>
+            </button>
+          )}
+          {canDrive &&
+            (drive?.state === "done" ? (
+              <button title="Open in Google Drive" aria-label="Open in Google Drive" onClick={() => openUrl(drive.link!).catch(() => {})}>
+                <svg viewBox="0 0 24 24"><path d="M14 3h7v7h-2V6.4l-7.3 7.3-1.4-1.4L17.6 5H14zM5 5h6v2H6v11h11v-5h2v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z" /></svg>
+              </button>
+            ) : (
+              <button title={drive?.error ?? (drive?.state === "busy" ? "Saving to Google Drive…" : "Save to Google Drive")} aria-label="Save to Google Drive" disabled={drive?.state === "busy"} onClick={() => saveToDrive(task, setDrive)}>
+                <svg viewBox="0 0 24 24"><path d="M12 4a6 6 0 0 1 5.8 4.6A4.5 4.5 0 0 1 17.5 19H7a5 5 0 0 1-.9-9.9A6 6 0 0 1 12 4zm-1 7.4V16h2v-4.6l1.6 1.6 1.4-1.4L12 7.6 8 11.6l1.4 1.4z" /></svg>
+              </button>
+            ))}
+          <button title="Show in Finder" aria-label="Show in Finder" onClick={() => invoke("reveal_task", { id: task.id }).catch(() => {})}>
+            <svg viewBox="0 0 24 24"><path d="M3 6a1 1 0 0 1 1-1h6l2 2h8a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" /></svg>
+          </button>
+        </div>
       </div>
-      <div className="meta">
-        {kindLabel} · {clock(task.startedAt)}
-        {running ? ` · ${elapsed(task, now)}` : ""}
-        {item && item.runs.length > 1 ? ` · ${item.runs.length} runs` : ""}
-        {task.refs?.length ? ` · ${task.refs.length} reference${task.refs.length > 1 ? "s" : ""}` : ""}
-      </div>
-      {item && item.runs.length > 1 && <div className="meta run-now">{running ? "Now: " : "Last: "}{task.title} · #{task.id}</div>}
       {running && (
         <div className="bar">
           <b style={{ width: `${progress}%` }} />
         </div>
       )}
-      {running && steps.length > 0 && (
-        <ul className="steps">
-          {steps.map((s, i) => (
-            <li key={s.id || i} className={s.done ? "done" : "now"}>
-              <i />
-              <span>
-                {s.label}
-                {s.detail && <small>{s.detail}</small>}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {running && steps.length === 0 && <p className="muted small">Starting Codex…</p>}
-      {task.kind === "image" && images.length > 0 && (
-        <div className={`thumbs n${Math.min(images.length, 4)}`}>
-          {images.slice(0, 4).map((p) => (
-            <ImageThumb key={p} path={p} className="thumb" alt={task.title} />
-          ))}
-        </div>
-      )}
-      {task.summary && !running && <p className="summary">{task.summary}</p>}
-      {task.error && task.status !== "done" && <p className="error-text">{task.error}</p>}
-      {!running && (task.sources > 0 || task.searches > 0) && (
-        <div className="sources">
-          {task.sources > 0 && <span>{task.sources} sources</span>}
-          {task.searches > 0 && <span>{task.searches} searches</span>}
-        </div>
-      )}
-      <div className="actions" onClick={(e) => e.stopPropagation()}>
-        {(task.status === "done" || item?.open) && (
-          <button className="mini" onClick={() => onOpen(openId)}>
-            {item?.kind === "video" ? "Open video" : item?.kind === "site" ? "Open site" : task.kind === "image" || task.kind === "browser" ? "View" : task.kind === "document" ? "Open document" : "Open report"}
-          </button>
-        )}
-        <button className="mini" onClick={() => invoke("reveal_task", { id: task.id }).catch(() => {})}>
-          Show file
-        </button>
-        {task.status === "done" && (task.kind === "document" || task.kind === "research" || task.kind === "browser") && !task.routine && (
-          drive?.state === "done" ? (
-            <button className="mini" onClick={() => openUrl(drive.link!).catch(() => {})}>
-              Saved · Open in Drive
-            </button>
-          ) : (
-            <button className="mini" disabled={drive?.state === "busy"} title={drive?.error} onClick={() => saveToDrive(task, setDrive)}>
-              {drive?.state === "busy" ? "Saving…" : drive?.state === "error" ? "Retry Drive" : "Save to Drive"}
-            </button>
-          )
-        )}
-        {running && (
-          <button className="mini" onClick={() => invoke("cancel_task", { id: task.id }).catch(() => {})}>
-            Stop
-          </button>
-        )}
-      </div>
       {earlier.length > 0 && (
         <details className="runs" onClick={(e) => e.stopPropagation()}>
-          <summary>Earlier runs ({earlier.length})</summary>
+          <summary>{earlier.length + 1} versions</summary>
           <ul>
             {earlier.map((r) => (
               <li key={r.id}>
                 <button className="run" onClick={() => onOpen(r.id)}>
                   <span>{r.title}</span>
                   <small>
-                    #{r.id} · {clock(r.startedAt)} · {PILL[r.status]}
+                    {clock(r.startedAt)} · {PILL[r.status]}
                   </small>
                 </button>
               </li>
