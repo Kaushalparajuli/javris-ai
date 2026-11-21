@@ -21,6 +21,16 @@
           send("unhandled: " + (r && r.stack ? r.stack : r));
         });
         send("page loaded: " + location.href);
+        // If the app's code fails to load at all (a broken import), no error event fires and the
+        // window just stays empty. After a few seconds, log it and say so instead of showing nothing.
+        setTimeout(function () {
+          var root = document.getElementById("root");
+          if (root && !root.childElementCount) {
+            send("blank: the app didn't render within 8 seconds");
+            root.innerHTML =
+              '<p style="font:13px -apple-system,sans-serif;color:#8ea1b4;padding:48px;text-align:center">Jarvis didn’t start properly. Quit it (⌘Q) and open it again.</p>';
+          }
+        }, 8000);
       })();
     </script>
   </head>

@@ -5,6 +5,7 @@ import { requestApproval } from "../lib/approvals";
 import { addDays, dateInput, describeWhen, isEmail, localDateTime, parseWhen, splitEmails, timeInput, timeZone, type CalEvent } from "../lib/calendar";
 import type { Settings } from "../lib/types";
 import GateGoogle, { useGoogle } from "./GateGoogle";
+import IconButton from "./IconButton";
 
 const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 const parse = parseWhen;
@@ -254,12 +255,8 @@ export default function CalendarPage({ settings, onAsk, onOpenSettings, onClose 
                     Open in Google Calendar
                   </button>
                 )}
-                <button className="mini" onClick={() => setForm(selected)}>
-                  Edit
-                </button>
-                <button className="mini danger" onClick={() => remove(selected)}>
-                  Delete
-                </button>
+                <IconButton icon="edit" label="Edit event" onClick={() => setForm(selected)} />
+                <IconButton icon="delete" label="Delete event" danger onClick={() => remove(selected)} />
                 <button className="mini" onClick={() => setSelected(null)}>
                   Close
                 </button>

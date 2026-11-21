@@ -92,40 +92,44 @@ export default function LibraryPage({
 
   return (
     <section className="libpage">
-      <header>
-        <button className="icon-btn back" onClick={onClose} aria-label="Back to the conversation" title="Back">
-          <svg viewBox="0 0 24 24">
-            <path d="M15.4 4.6 13.9 3.2 6.1 11l7.8 7.8 1.5-1.4L9 11z" />
-          </svg>
-        </button>
-        <div>
-          <h2>Library</h2>
-          <p className="muted small">
-            {inScope.length === 0 ? "Nothing yet" : `${inScope.length} item${inScope.length === 1 ? "" : "s"}`}
-            {scope === "chat" ? ` in “${chatName.get(chatId) ?? "this chat"}”` : " across all chats"}
-          </p>
-        </div>
-        <input className="typebox find" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search the library…" aria-label="Search the library" />
-        <button className="mini" onClick={onOpenFile}>
-          Open file…
-        </button>
-        <button className="btn primary" onClick={onNew}>
-          New document
-        </button>
-        <div className="seg" role="group" aria-label="Which chats">
-          <button className={scope === "all" ? "on" : ""} onClick={() => pickScope("all")}>
-            All chats
+      <header className="library-head">
+        <div className="lh-row">
+          <button className="icon-btn back" onClick={onClose} aria-label="Back to the conversation" title="Back">
+            <svg viewBox="0 0 24 24">
+              <path d="M15.4 4.6 13.9 3.2 6.1 11l7.8 7.8 1.5-1.4L9 11z" />
+            </svg>
           </button>
-          <button className={scope === "chat" ? "on" : ""} onClick={() => pickScope("chat")}>
-            This chat
+          <div className="lh-title">
+            <h2>Library</h2>
+            <p className="muted small">
+              {inScope.length === 0 ? "Nothing yet" : `${inScope.length} item${inScope.length === 1 ? "" : "s"}`}
+              {scope === "chat" ? ` in “${chatName.get(chatId) ?? "this chat"}”` : " across all chats"}
+            </p>
+          </div>
+          <input className="typebox find" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search the library…" aria-label="Search the library" />
+          <button className="mini" onClick={onOpenFile}>
+            Open file…
+          </button>
+          <button className="btn primary" onClick={onNew}>
+            New document
           </button>
         </div>
-        <div className="seg" role="group" aria-label="Filter by type">
-          {KINDS.map((k) => (
-            <button key={k.id} className={kind === k.id ? "on" : ""} onClick={() => setKind(k.id)}>
-              {k.label}
+        <div className="lh-row lh-filters">
+          <div className="seg lh-kinds" role="group" aria-label="Filter by type">
+            {KINDS.map((k) => (
+              <button key={k.id} className={kind === k.id ? "on" : ""} onClick={() => setKind(k.id)}>
+                {k.label}
+              </button>
+            ))}
+          </div>
+          <div className="seg" role="group" aria-label="Which chats">
+            <button className={scope === "all" ? "on" : ""} onClick={() => pickScope("all")}>
+              All chats
             </button>
-          ))}
+            <button className={scope === "chat" ? "on" : ""} onClick={() => pickScope("chat")}>
+              This chat
+            </button>
+          </div>
         </div>
       </header>
 

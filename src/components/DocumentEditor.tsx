@@ -11,6 +11,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { askSavePath, fileNameOf } from "../lib/saveAs";
 import type { Task } from "../lib/types";
 import PanelControls from "./PanelControls";
+import IconButton from "./IconButton";
 
 type View = "write" | "split" | "preview";
 type SaveState = "saved" | "saving" | "unsaved" | "error";
@@ -547,18 +548,14 @@ export default function DocumentEditor({ doc, tasks, micOn, onToggleMic, onWrite
               </button>
             ))}
           </div>
-          <button className="mini" onClick={copy} disabled={!text.trim()}>
-            Copy
-          </button>
+          <IconButton icon="copy" label="Copy as Markdown" onClick={copy} disabled={!text.trim()} />
           <button className="mini" onClick={exportWord} disabled={!text.trim() || locked}>
             Word
           </button>
           <button className="mini" onClick={exportPdf} disabled={!text.trim() || locked}>
             PDF
           </button>
-          <button className="mini" onClick={() => invoke("reveal_task", { id: doc.id }).catch((e) => setError(String(e)))}>
-            Show in Finder
-          </button>
+          <IconButton icon="finder" label="Show in Finder" onClick={() => invoke("reveal_task", { id: doc.id }).catch((e) => setError(String(e)))} />
         </div>
       </div>
 

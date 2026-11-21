@@ -1,7 +1,7 @@
 // Routines in plain words: what each kind of step means, ready-made routines, and the planner
 // that turns "every Monday, check my competitors and email me" into steps.
 
-import { WEEKDAYS } from "./briefings";
+import { WEEKDAYS } from "./schedule";
 import type { KnowHow, Routine, RoutineStep, StepKind } from "./types";
 
 /** How each kind of step is described, and what it's allowed to do. */

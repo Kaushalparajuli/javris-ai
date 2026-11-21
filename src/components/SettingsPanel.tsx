@@ -36,7 +36,7 @@ const NAV = [
   { id: "screen", label: "Screen & approvals", words: "accessibility screen recording permission approve ask never audit write send", icon: "M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5zm0 2.1 6 2.2V11c0 3.9-2.5 7.6-6 8.9-3.5-1.3-6-5-6-8.9V6.3zM11 8h2v5h-2zm0 6h2v2h-2z" },
 ];
 
-export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }: { initial: Settings; onClose: () => void; onSaved: () => void; onOpenSetup?: () => void }) {
+export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup, section }: { initial: Settings; onClose: () => void; onSaved: () => void; onOpenSetup?: () => void; section?: string }) {
   const [s, setS] = useState<Settings>(initial);
   const [models, setModels] = useState<string[]>([]);
   const [modelMsg, setModelMsg] = useState("");
@@ -45,7 +45,7 @@ export default function SettingsPanel({ initial, onClose, onSaved, onOpenSetup }
   const [installing, setInstalling] = useState(false);
   const [installMsg, setInstallMsg] = useState("");
   const triedInstall = useRef(false);
-  const [tab, setTab] = useState("general");
+  const [tab, setTab] = useState(section ?? "general");
   const [search, setSearch] = useState("");
   const [trusted, setTrusted] = useState<boolean | null>(null);
   const [screenOk, setScreenOk] = useState<boolean | null>(null);

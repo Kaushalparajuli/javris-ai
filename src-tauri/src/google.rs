@@ -322,7 +322,7 @@ pub struct ServiceStatus {
 #[serde(rename_all = "camelCase")]
 pub struct GoogleStatus {
     configured: bool,
-    /// Gmail or Calendar is connected (what routines and the morning briefing need).
+    /// Gmail or Calendar is connected (what routines need).
     connected: bool,
     /// The account of the first connected service, for "email me" steps.
     email: String,

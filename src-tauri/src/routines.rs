@@ -13,7 +13,7 @@
 use crate::google;
 use crate::settings::{self, Settings};
 use crate::tasks::{self, Status, Task};
-use chrono::{Local, TimeZone};
+use chrono::{DateTime, Datelike, Local, NaiveTime, TimeZone};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -213,7 +213,7 @@ fn is_cancelled(run_id: &str) -> bool {
 
 fn schedule(r: &mut Routine) {
     r.next_run = if r.enabled && r.repeat != "manual" {
-        crate::briefings::next_time(&r.repeat, r.weekday, &r.time, Local::now()).map(|t| t.timestamp_millis().max(0) as u64)
+        next_time(&r.repeat, r.weekday, &r.time, Local::now()).map(|t| t.timestamp_millis().max(0) as u64)
     } else {
         None
     };
@@ -1207,6 +1207,50 @@ pub fn learn_know_how(app: AppHandle, name: String, run_id: Option<String>, task
     let _ = app.emit("task-update", &task);
     tauri::async_runtime::spawn(tasks::run_codex(app.clone(), task.id, args, dir, codex));
     Ok(task)
+}
+
+/// The first moment strictly after `after` on a "daily", "weekdays" or "weekly" schedule at
+/// `time` ("HH:MM", local).
+pub fn next_time(repeat: &str, on_weekday: u8, time: &str, after: DateTime<Local>) -> Option<DateTime<Local>> {
+    let at = NaiveTime::parse_from_str(time.trim(), "%H:%M").ok()?;
+    let mut day = after.date_naive();
+    for _ in 0..9 {
+        let weekday = day.weekday().num_days_from_monday() as u8;
+        let wanted = match repeat {
+            "weekdays" => weekday < 5,
+            "weekly" => weekday == on_weekday,
+            _ => true,
+        };
+        // A time that doesn't exist on a clock-change day moves to the next day.
+        if let Some(when) = Local.from_local_datetime(&day.and_time(at)).earliest() {
+            if wanted && when > after {
+                return Some(when);
+            }
+        }
+        day = day.succ_opt()?;
+    }
+    None
+}
+
+#[cfg(test)]
+mod schedule_tests {
+    use super::*;
+
+    fn at(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Local> {
+        Local.with_ymd_and_hms(y, mo, d, h, mi, 0).earliest().unwrap()
+    }
+
+    #[test]
+    fn works_out_the_next_run() {
+        // 2026-09-29 is a Tuesday.
+        let tue_8am = at(2026, 9, 29, 8, 0);
+        assert_eq!(next_time("daily", 0, "09:00", tue_8am), Some(at(2026, 9, 29, 9, 0)), "later today");
+        assert_eq!(next_time("daily", 0, "07:30", tue_8am), Some(at(2026, 9, 30, 7, 30)), "tomorrow");
+        assert_eq!(next_time("weekly", 0, "09:00", tue_8am), Some(at(2026, 10, 5, 9, 0)), "next Monday");
+        let fri_10am = at(2026, 10, 2, 10, 0);
+        assert_eq!(next_time("weekdays", 0, "09:00", fri_10am), Some(at(2026, 10, 5, 9, 0)), "skips the weekend");
+        assert_eq!(next_time("daily", 0, "9am", tue_8am), None, "bad time");
+    }
 }
 
 #[cfg(test)]

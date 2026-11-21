@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { day } from "../lib/format";
+import IconButton from "./IconButton";
 
 interface Hit {
   kind: "chat" | "document" | "research" | "image" | "browser";
@@ -184,9 +185,7 @@ export default function SearchPage({
         {index?.folders.map((f) => (
           <div className="folder-row" key={f}>
             <span title={f}>{f.replace(/^\/Users\/[^/]+/, "~")}</span>
-            <button className="mini" onClick={() => changeFolders(invoke<IndexStatus>("index_remove_folder", { path: f }))} disabled={indexBusy}>
-              Remove
-            </button>
+            <IconButton icon="remove" label="Stop searching this folder" onClick={() => changeFolders(invoke<IndexStatus>("index_remove_folder", { path: f }))} disabled={indexBusy} />
           </div>
         ))}
         {index && index.folders.length > 0 && (

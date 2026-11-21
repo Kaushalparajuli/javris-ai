@@ -12,11 +12,9 @@ import LibraryPage from "./components/LibraryPage";
 import Orb from "./components/Orb";
 import ReportViewer from "./components/ReportViewer";
 import SearchPage from "./components/SearchPage";
-import BriefingsPage from "./components/BriefingsPage";
 import KnowHowPage from "./components/KnowHowPage";
 import MemoryPage from "./components/MemoryPage";
 import NewProjectPage from "./components/NewProjectPage";
-import AppsPage from "./components/AppsPage";
 import DayPage from "./components/DayPage";
 import ProjectsPage from "./components/ProjectsPage";
 import ProjectPage from "./components/ProjectPage";
@@ -25,7 +23,6 @@ import SetupPanel from "./components/SetupPanel";
 import ApprovalCard from "./components/ApprovalCard";
 import CalendarPage from "./components/CalendarPage";
 import MailPage from "./components/MailPage";
-import DrivePage from "./components/DrivePage";
 import YouTubePage, { type YtIntent, type YtItem } from "./components/YouTubePage";
 import YtDock from "./components/YtDock";
 import CommandPalette from "./components/CommandPalette";
@@ -67,6 +64,8 @@ export default function App() {
   const j = useJarvis();
   useMiniBridge(j);
   const [showSettings, setShowSettings] = useState(false);
+  /** The Settings section to open on, e.g. "google" for connected apps. */
+  const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined);
   const [showPalette, setShowPalette] = useState(false);
   useEffect(() => {
     const un = listen<string>("shortcut", (e) => {
@@ -77,7 +76,7 @@ export default function App() {
     };
   }, []);
   // What fills the main area beside the sidebar.
-  const [page, setPage] = useState<"chat" | "library" | "search" | "briefings" | "routines" | "knowhow" | "mail" | "calendar" | "drive" | "youtube" | "memory" | "projects" | "project" | "newproject" | "day" | "apps">("chat");
+  const [page, setPage] = useState<"chat" | "library" | "search" | "routines" | "knowhow" | "mail" | "calendar" | "youtube" | "memory" | "projects" | "project" | "newproject" | "day">("chat");
   // Jarvis asking the YouTube page to show results or play a video.
   const [ytIntent, setYtIntent] = useState<YtIntent | null>(null);
   // The video playing now stays at the app level so it keeps going on other pages (mini bar at the bottom).
@@ -492,6 +491,7 @@ export default function App() {
               onNewDocument={() => { setPage("chat"); j.newDocument().catch((e) => j.setError(String(e))); }}
               onOpenFile={() => { setPage("chat"); j.openFiles().catch((e) => j.setError(String(e))); }}
               onSettings={() => setShowSettings(true)}
+              onConnectedApps={() => { setSettingsTab("google"); setShowSettings(true); }}
             />
           </div>
         </aside>
@@ -517,8 +517,6 @@ export default function App() {
             onOpenTask={j.setReportId}
             onClose={() => setPage("chat")}
           />
-        ) : page === "apps" ? (
-          <AppsPage onOpen={(p) => { closePanel(); setPage(p); }} onOpenSettings={() => setShowSettings(true)} onClose={() => setPage("chat")} />
         ) : page === "day" ? (
           <DayPage
             tasks={j.tasks}
@@ -541,6 +539,7 @@ export default function App() {
             onOpen={showProject}
             onNewChat={newChatIn}
             onEdit={(slug) => { setEditProject(slug); setPage("newproject"); }}
+            onDeleted={projectSaved}
             onClose={() => setPage("chat")}
           />
         ) : page === "project" && (projects ?? []).find((p) => p.slug === viewProject) ? (
@@ -589,15 +588,6 @@ export default function App() {
             onOpenSettings={() => setShowSettings(true)}
             onClose={() => setPage("chat")}
           />
-        ) : page === "drive" ? (
-          <DrivePage
-            onAsk={(t) => {
-              setPage("chat");
-              j.sendTyped(t);
-            }}
-            onOpenSettings={() => setShowSettings(true)}
-            onClose={() => setPage("chat")}
-          />
         ) : page === "youtube" ? (
           <YouTubePage
             intent={ytIntent}
@@ -613,8 +603,6 @@ export default function App() {
             onOpenSettings={() => setShowSettings(true)}
             onClose={() => setPage("chat")}
           />
-        ) : page === "briefings" ? (
-          <BriefingsPage chatId={j.chatId} onOpenTask={j.setReportId} onClose={() => setPage("chat")} />
         ) : page === "search" ? (
           <SearchPage
             openId={j.reportId}
@@ -921,7 +909,11 @@ export default function App() {
       {showSettings && j.settings && (
         <SettingsPanel
           initial={j.settings}
-          onClose={() => setShowSettings(false)}
+          section={settingsTab}
+          onClose={() => {
+            setShowSettings(false);
+            setSettingsTab(undefined);
+          }}
           onSaved={() => j.reloadSettings()}
           onOpenSetup={() => {
             setShowSettings(false);

@@ -1,6 +1,9 @@
+import { invoke } from "@tauri-apps/api/core";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
 import { day } from "../lib/format";
 import type { ChatSummary, Workspace } from "../lib/types";
+import IconButton from "./IconButton";
 
 /** Every project as a card: what it is, how many chats, when it was last used. */
 export default function ProjectsPage({
@@ -10,6 +13,7 @@ export default function ProjectsPage({
   onOpen,
   onNewChat,
   onEdit,
+  onDeleted,
   onClose,
 }: {
   projects: Workspace[];
@@ -18,9 +22,28 @@ export default function ProjectsPage({
   onOpen: (slug: string) => void;
   onNewChat: (slug: string) => void;
   onEdit: (slug: string) => void;
+  /** A project was deleted: reload the list. */
+  onDeleted: () => void;
   onClose: () => void;
 }) {
   const [q, setQ] = useState("");
+  const [error, setError] = useState("");
+
+  const remove = async (p: Workspace, count: number) => {
+    const chatsLine = count ? `Its ${count} ${count === 1 ? "chat moves" : "chats move"} to Recents. ` : "";
+    const ok = await confirm(`Delete the project “${p.name}”?\n\n${chatsLine}Its files folder stays on your Mac.`, {
+      title: "Delete project",
+      kind: "warning",
+      okLabel: "Delete",
+    });
+    if (!ok) return;
+    try {
+      await invoke("delete_workspace", { slug: p.slug });
+      onDeleted();
+    } catch (e) {
+      setError(`Couldn't delete “${p.name}”: ${e}`);
+    }
+  };
   const rows = projects
     .map((p) => {
       const mine = chats.filter((c) => c.workspace === p.slug);
@@ -42,6 +65,7 @@ export default function ProjectsPage({
         <button className="btn primary" onClick={onNew}>+ New project</button>
       </header>
       <div className="rt-body proj-body">
+        {error && <p className="error-text small">{error}</p>}
         {projects.length > 0 && <input className="proj-search" placeholder="Search projects" value={q} onChange={(e) => setQ(e.target.value)} />}
         {projects.length === 0 ? (
           <div className="proj-empty">
@@ -65,8 +89,9 @@ export default function ProjectsPage({
                   {last ? ` · updated ${day(last)}` : ""}
                 </span>
                 <span className="proj-actions">
-                  <button className="mini" onClick={(e) => { e.stopPropagation(); onNewChat(p.slug); }}>New chat</button>
-                  <button className="mini" onClick={(e) => { e.stopPropagation(); onEdit(p.slug); }}>Edit</button>
+                  <IconButton icon="newChat" label={`New chat in ${p.name}`} onClick={(e) => { e.stopPropagation(); onNewChat(p.slug); }} />
+                  <IconButton icon="edit" label={`Edit ${p.name}`} onClick={(e) => { e.stopPropagation(); onEdit(p.slug); }} />
+                  <IconButton icon="delete" label={`Delete ${p.name}`} danger onClick={(e) => { e.stopPropagation(); remove(p, count); }} />
                 </span>
               </div>
             ))}

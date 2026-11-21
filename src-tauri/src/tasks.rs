@@ -782,7 +782,6 @@ fn notify_finished(app: &AppHandle, task: &Task) {
         "code" => "Code task",
         "skill" => "Know-how",
         "slides" => "Slide deck",
-        _ if task.title.starts_with("Briefing:") => "Briefing",
         _ => "Research",
     };
     let (title, body) = if task.status == Status::Done {
@@ -897,7 +896,7 @@ pub(crate) fn new_task(
     Ok(task)
 }
 
-/// Every task, for other parts of the app (search, briefings) to read.
+/// Every task, for other parts of the app (search, routines) to read.
 pub(crate) fn snapshot(app: &AppHandle) -> Vec<Task> {
     app.state::<TaskStore>().tasks.lock().unwrap().values().cloned().collect()
 }

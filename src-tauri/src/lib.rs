@@ -1,4 +1,3 @@
-mod briefings;
 mod browser;
 mod applog;
 mod capture;
@@ -114,7 +113,6 @@ pub fn run() {
             tauri::async_runtime::spawn(memory::embed_missing(app.handle().clone()));
             tauri::async_runtime::spawn(fileindex::rescan(app.handle().clone()));
             tauri::async_runtime::spawn(fileindex::run_scheduler(app.handle().clone()));
-            tauri::async_runtime::spawn(briefings::run_scheduler(app.handle().clone()));
             tauri::async_runtime::spawn(routines::run_scheduler(app.handle().clone()));
             tauri::async_runtime::spawn(browser::run_reaper(app.handle().clone()));
             // Listens for the owner's Telegram messages when a bot is paired and switched on.
@@ -233,7 +231,6 @@ pub fn run() {
             tasks::export_pdf,
             chats::list_chats,
             search::search,
-            briefings::list_briefings,
             browser::start_browse,
             browser::browser_status,
             browser::install_browser_tools,
@@ -278,9 +275,6 @@ pub fn run() {
             sources::sec_read,
             sources::paper_search,
             sources::youtube_ask,
-            briefings::save_briefing,
-            briefings::delete_briefing,
-            briefings::run_briefing_now,
             videokit::video_status,
             videokit::video_setup,
             videokit::video_new,

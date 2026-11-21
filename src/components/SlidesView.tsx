@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useState } from "react";
 import type { Task } from "../lib/types";
+import IconButton from "./IconButton";
 
 interface SlidesInfo {
   deck: string;
@@ -53,9 +54,7 @@ export default function SlidesView({ task }: { task: Task }) {
           <button className="mini" onClick={() => invoke("slides_open", { id: task.id }).catch((e) => setError(String(e)))}>
             Open in Keynote
           </button>
-          <button className="mini" onClick={() => invoke("reveal_task", { id: task.id }).catch((e) => setError(String(e)))}>
-            Show in Finder
-          </button>
+          <IconButton icon="finder" label="Show in Finder" onClick={() => invoke("reveal_task", { id: task.id }).catch((e) => setError(String(e)))} />
           {info.link ? (
             <button className="mini" onClick={() => openUrl(info.link).catch(() => {})}>
               Open in Google Slides

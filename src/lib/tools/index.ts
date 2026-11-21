@@ -5,7 +5,6 @@
 import type { Risk } from "../approvals";
 import type { FunctionCall } from "../live";
 import type { Settings } from "../types";
-import { slidesTools } from "./slides";
 import { sources } from "./sources";
 
 export interface ToolContext {
@@ -35,7 +34,17 @@ export interface ToolModule {
   run(fc: FunctionCall, ctx: ToolContext): Promise<object> | null;
 }
 
-const MODULES: ToolModule[] = [sources, slidesTools];
+// Slides, SEC filings and research-paper tools were never used, so they're left out of the voice
+// session (fewer tools means faster connects and better tool choice). Their code stays in
+// ./slides.ts and ./sources.ts; add a module back here to turn it on again.
+const ON = new Set(["youtube_ask"]);
+const only = (m: ToolModule): ToolModule => ({
+  declarations: m.declarations.filter((d) => ON.has((d as { name: string }).name)),
+  changing: m.changing.filter((n) => ON.has(n)),
+  run: (fc, ctx) => (ON.has(fc.name) ? m.run(fc, ctx) : null),
+});
+
+const MODULES: ToolModule[] = [only(sources)];
 
 export const extraTools = (): object[] => MODULES.flatMap((m) => m.declarations);
 

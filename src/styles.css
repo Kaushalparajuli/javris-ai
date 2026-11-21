@@ -1385,3 +1385,33 @@ button.day-stat:hover { border-color: rgba(127, 220, 255, 0.4); }
 .tc-actions svg { width: 15px; height: 15px; fill: var(--muted); }
 .task.compact .bar { height: 3px; margin: 0 0 0 44px; }
 .task.compact .runs { margin-left: 44px; font-size: 11px; }
+
+/* ---------- Library toolbar: title and actions on one row, filters on the next ---------- */
+.libpage > header.library-head { flex-direction: column; align-items: stretch; gap: 12px; padding: 16px 24px 12px; }
+.library-head .lh-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.library-head .lh-title { min-width: 0; margin-right: auto; }
+.library-head .lh-title p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.library-head .find { flex: 0 1 240px; min-width: 120px; margin-left: 0; }
+.library-head .mini, .library-head .btn { flex: none; white-space: nowrap; }
+.library-head .lh-filters { justify-content: space-between; }
+.library-head .seg { flex: none; }
+.library-head .seg button { white-space: nowrap; }
+/* The type filters scroll sideways rather than squashing when the window is narrow. */
+.library-head .lh-kinds { flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.library-head .lh-kinds::-webkit-scrollbar { display: none; }
+@media (max-width: 760px) {
+  .library-head .lh-row:first-child { flex-wrap: wrap; }
+  .library-head .find { order: 5; flex: 1 1 100%; }
+}
+.libpage > header.library-head { background: rgba(16, 20, 30, 0.98); }
+.library-head .find { padding: 6px 12px; border-radius: 8px; background: rgba(255, 255, 255, 0.07); border: 1px solid var(--line); font-size: 13px; }
+.library-head .find:focus { border-color: rgba(127, 220, 255, 0.5); outline: none; }
+
+/* Icon-only action buttons (IconButton): 28px, quiet until hovered, the words in a tooltip. */
+.icon-action { flex: none; width: 28px; height: 28px; display: inline-grid; place-items: center; border: 0; border-radius: 7px; background: none; color: var(--muted); cursor: pointer; }
+.icon-action svg { width: 16px; height: 16px; fill: currentColor; }
+.icon-action:hover { background: rgba(255, 255, 255, 0.09); color: var(--fg); }
+.icon-action.danger:hover { background: rgba(255, 138, 122, 0.14); color: var(--bad); }
+.icon-action:disabled { opacity: 0.4; cursor: default; background: none; }
+.icon-action:focus-visible { outline: 2px solid var(--arc); outline-offset: 1px; }
+.proj-actions { display: flex; gap: 2px; align-items: center; }

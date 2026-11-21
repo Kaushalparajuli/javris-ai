@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useState } from "react";
 import type { CalEvent } from "../lib/calendar";
-import type { Briefing, Routine, Task } from "../lib/types";
+import type { Routine, Task } from "../lib/types";
 
 interface Mail {
   id: string;
@@ -14,12 +14,10 @@ interface Mail {
 const hm = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const sender = (from: string) => from.replace(/<.*>/, "").replace(/"/g, "").trim() || from;
 
-/** Routines and briefings that will run later today. */
-function dueToday(routines: Routine[], briefings: Briefing[]): { title: string; at: Date }[] {
+/** Routines that will run later today. */
+function dueToday(routines: Routine[]): { title: string; at: Date }[] {
   const now = new Date();
-  const end = new Date(now).setHours(23, 59, 59, 999);
   const out: { title: string; at: Date }[] = [];
-  for (const b of briefings) if (b.enabled && b.nextRun && b.nextRun > now.getTime() && b.nextRun <= end) out.push({ title: b.title, at: new Date(b.nextRun) });
   const monday0 = (now.getDay() + 6) % 7;
   for (const r of routines) {
     if (!r.enabled || r.repeat === "manual") continue;
@@ -64,16 +62,15 @@ export default function DayPage({
     start.setHours(0, 0, 0, 0);
     const end = new Date(start);
     end.setHours(23, 59, 59, 999);
-    const [ev, ml, rt, br] = await Promise.all([
+    const [ev, ml, rt] = await Promise.all([
       invoke<CalEvent[]>("calendar_list", { from: start.toISOString(), to: end.toISOString() }).then((v) => ({ v }), (e) => ({ e: String(e) })),
       invoke<Mail[]>("mail_search", { query: "is:unread in:inbox newer_than:2d -category:promotions -category:social", max: 8 }).then((v) => ({ v }), (e) => ({ e: String(e) })),
       invoke<Routine[]>("list_routines").catch(() => [] as Routine[]),
-      invoke<Briefing[]>("list_briefings").catch(() => [] as Briefing[]),
     ]);
     setEvents("v" in ev ? ev.v : []);
     setMail("v" in ml ? ml.v : []);
     setProblems({ cal: "e" in ev ? ev.e : undefined, mail: "e" in ml ? ml.e : undefined });
-    setLater(dueToday(rt, br));
+    setLater(dueToday(rt));
     setLoading(false);
   }, []);
   useEffect(() => {
@@ -243,7 +240,7 @@ export default function DayPage({
                 <h3>Later today</h3>
               </div>
               {later.length === 0 ? (
-                <p className="day-empty">No routines or briefings are due.</p>
+                <p className="day-empty">Nothing else is scheduled today.</p>
               ) : (
                 <ul className="day-rows">
                   {later.map((l, i) => (

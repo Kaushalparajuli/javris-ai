@@ -4,6 +4,7 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { useMemo, useState } from "react";
 import type { VideoInfo, VideoProgress } from "../lib/types";
+import IconButton from "./IconButton";
 
 /** The steps a video goes through, in order. */
 const STEPS = [
@@ -165,9 +166,7 @@ export default function VideoTab({
                 Render the final
               </button>
             )}
-            <button className="mini" onClick={() => invoke("reveal_path", { path: `${folder}/${latest.path}` }).catch(() => {})}>
-              Show in Finder
-            </button>
+            <IconButton icon="finder" label="Show in Finder" onClick={() => invoke("reveal_path", { path: `${folder}/${latest.path}` }).catch(() => {})} />
           </div>
         </div>
       ) : (

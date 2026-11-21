@@ -4,6 +4,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useEffect, useState } from "react";
 import { day } from "../lib/format";
 import type { ChatSummary, ProjectFile, Workspace } from "../lib/types";
+import IconButton from "./IconButton";
 
 function size(n: number) {
   if (n < 1024) return `${n} B`;
@@ -129,14 +130,14 @@ export default function ProjectPage({
                         {f.isDir ? `📁 ${f.name}/` : f.name}
                       </button>
                       <span className="muted small">{f.isDir ? "folder" : size(f.size)}</span>
-                      {!f.isDir && <button className="mini danger" onClick={() => removeFile(f.name)} aria-label={`Remove ${f.name}`}>Remove</button>}
+                      {!f.isDir && <IconButton icon="delete" label={`Move ${f.name} to the Trash`} danger onClick={() => removeFile(f.name)} />}
                     </li>
                   ))}
                 </ul>
               )}
               <p className="muted small" title={project.folder}>
                 Folder: {project.folder.replace(/^\/Users\/[^/]+/, "~")}{" "}
-                <button className="mini" onClick={() => revealItemInDir(`${project.folder}/${files[0]?.name ?? ""}`.replace(/\/$/, "")).catch(() => {})}>Show in Finder</button>
+                <IconButton icon="finder" label="Show in Finder" onClick={() => revealItemInDir(`${project.folder}/${files[0]?.name ?? ""}`.replace(/\/$/, "")).catch(() => {})} />
               </p>
             </section>
           </div>

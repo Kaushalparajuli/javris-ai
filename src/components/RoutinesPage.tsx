@@ -2,9 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
-import { WEEKDAYS, when } from "../lib/briefings";
+import { WEEKDAYS, when } from "../lib/schedule";
 import { blankRoutine, KIND_NAMES, LEVELS, minutesFor, planRoutine, routineWhen, STEP_INFO, TEMPLATES, type Template } from "../lib/routines";
 import type { KnowHow, Routine, RoutineStep, Run, StepKind, Task } from "../lib/types";
+import IconButton from "./IconButton";
 
 const ICONS: Record<Template["icon"] | "routine", string> = {
   chart: "M3 19 9 11l4 4 5-8 3 5v7z",
@@ -679,9 +680,7 @@ function RunView({
                 {s.note && <small>{s.note}</small>}
               </div>
               {s.taskId != null && (s.status === "done" || s.status === "failed") && (
-                <button className="mini" onClick={() => onOpenTask(s.taskId!)}>
-                  Open
-                </button>
+                <IconButton icon="open" label="Open the result" onClick={() => onOpenTask(s.taskId!)} />
               )}
             </li>
           ))}

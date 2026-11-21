@@ -15,6 +15,7 @@ import ImageThumb from "./ImageThumb";
 import SlidesView from "./SlidesView";
 import { hydrateImages } from "../lib/docImages";
 import PanelControls from "./PanelControls";
+import IconButton from "./IconButton";
 
 /** The video progress for a project folder, matching on the last two folder names in case the paths are spelled differently. */
 function progressFor(map: Record<string, VideoProgress> | undefined, project: string) {
@@ -140,9 +141,7 @@ export default function ReportViewer({
             PDF
           </button>
         )}
-        <button className="mini" onClick={() => invoke("reveal_task", { id: task.id }).catch(() => {})}>
-          Show in Finder
-        </button>
+        <IconButton icon="finder" label="Show in Finder" onClick={() => invoke("reveal_task", { id: task.id }).catch(() => {})} />
         <PanelControls expanded={expanded} onToggleExpand={onToggleExpand} onClose={onClose} />
       </header>
 
@@ -224,9 +223,7 @@ export default function ReportViewer({
               <ImageThumb path={p} className="full" alt={task.title} />
               <figcaption>
                 <span>{p.split(/[\\/]/).pop()}</span>
-                <button className="mini" onClick={() => invoke("reveal_path", { path: p })}>
-                  Show in Finder
-                </button>
+                <IconButton icon="finder" label="Show in Finder" onClick={() => invoke("reveal_path", { path: p })} />
               </figcaption>
             </figure>
           ))}
@@ -243,9 +240,7 @@ export default function ReportViewer({
                   <ImageThumb path={p} className="full" alt={`Screenshot from ${task.title}`} />
                   <figcaption>
                     <span>{p.split(/[\\/]/).pop()}</span>
-                    <button className="mini" onClick={() => invoke("reveal_path", { path: p })}>
-                      Show in Finder
-                    </button>
+                    <IconButton icon="finder" label="Show in Finder" onClick={() => invoke("reveal_path", { path: p })} />
                   </figcaption>
                 </figure>
               ))}

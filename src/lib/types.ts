@@ -146,27 +146,6 @@ export interface MicDevice {
   isDefault: boolean;
 }
 
-export interface Briefing {
-  id: string;
-  title: string;
-  /** What each run should research. */
-  request: string;
-  repeat: "daily" | "weekdays" | "weekly";
-  /** For weekly briefings: 0 = Monday … 6 = Sunday. */
-  weekday: number;
-  /** Local time, "HH:MM". */
-  time: string;
-  depth: "quick" | "deep";
-  chatId: string;
-  enabled: boolean;
-  createdAt: number;
-  lastRun: number | null;
-  lastTask: number | null;
-  nextRun: number | null;
-  /** Why the last scheduled run couldn't start; empty when it did. */
-  lastError?: string;
-}
-
 export type StepKind = "research" | "write" | "inbox" | "calendar" | "email_me";
 
 export interface RoutineStep {
