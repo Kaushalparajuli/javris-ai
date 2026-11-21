@@ -15,7 +15,7 @@ import SearchPage from "./components/SearchPage";
 import KnowHowPage from "./components/KnowHowPage";
 import MemoryPage from "./components/MemoryPage";
 import NewProjectPage from "./components/NewProjectPage";
-import DayPage from "./components/DayPage";
+import HomePage from "./components/HomePage";
 import ProjectsPage from "./components/ProjectsPage";
 import ProjectPage from "./components/ProjectPage";
 import RoutinesPage from "./components/RoutinesPage";
@@ -76,7 +76,7 @@ export default function App() {
     };
   }, []);
   // What fills the main area beside the sidebar.
-  const [page, setPage] = useState<"chat" | "library" | "search" | "routines" | "knowhow" | "mail" | "calendar" | "youtube" | "memory" | "projects" | "project" | "newproject" | "day">("chat");
+  const [page, setPage] = useState<"chat" | "library" | "search" | "routines" | "knowhow" | "mail" | "calendar" | "youtube" | "memory" | "projects" | "project" | "newproject" | "home">("home");
   // Jarvis asking the YouTube page to show results or play a video.
   const [ytIntent, setYtIntent] = useState<YtIntent | null>(null);
   // The video playing now stays at the app level so it keeps going on other pages (mini bar at the bottom).
@@ -448,14 +448,14 @@ export default function App() {
               New chat
               <kbd>{isMac ? "⌘N" : "Ctrl N"}</kbd>
             </button>
+            <button className={`sb-item ${page === "home" && !docTask ? "on" : ""}`} onClick={() => { closePanel(); setPage("home"); }}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 11.5l1.3 1.5L5 11.6V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1v-8.4l1.7 1.4 1.3-1.5z" /></svg>
+              Home
+            </button>
             <button className={`sb-item ${page === "search" ? "on" : ""}`} onClick={() => setPage("search")}>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 0 1 5.2 10.4l4.4 4.4-1.4 1.4-4.4-4.4A6.5 6.5 0 1 1 10.5 4zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z" /></svg>
               Search
               <kbd>{isMac ? "⌘K" : "Ctrl K"}</kbd>
-            </button>
-            <button className={`sb-item ${page === "day" && !docTask ? "on" : ""}`} onClick={() => { closePanel(); setPage("day"); }}>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7a5 5 0 1 1 0 10 5 5 0 0 1 0-10zM11 1h2v3h-2zm0 19h2v3h-2zM1 11h3v2H1zm19 0h3v2h-3zM4.2 5.6l1.4-1.4 2.1 2.1-1.4 1.4zm12.1 12.1 1.4-1.4 2.1 2.1-1.4 1.4zM5.6 19.8l-1.4-1.4 2.1-2.1 1.4 1.4zM17.7 7.7l-1.4-1.4 2.1-2.1 1.4 1.4z" /></svg>
-              Today
             </button>
             <button className={`sb-item ${showLibrary && !docTask ? "on" : ""}`} onClick={() => { closePanel(); setPage("library"); }}>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h5v16H4zm6.5 0h4v16h-4zM17 4.7l3.6 15.6-2 .5L15 5.2z" /></svg>
@@ -517,19 +517,36 @@ export default function App() {
             onOpenTask={j.setReportId}
             onClose={() => setPage("chat")}
           />
-        ) : page === "day" ? (
-          <DayPage
-            tasks={j.tasks}
+        ) : page === "home" ? (
+          <HomePage
             userName={j.settings?.userName?.trim() ?? ""}
-            onBrief={() => {
+            work={work}
+            chats={j.chats}
+            orb={j.orb}
+            onAsk={async (text) => {
+              // A question from Home starts a fresh conversation.
+              closePanel();
+              await j.newChat("");
+              setPage("chat");
+              j.sendTyped(text);
+            }}
+            onTalk={async () => {
+              closePanel();
+              setPage("chat");
+              if (!j.micOn) await j.toggleMic();
+            }}
+            onBrief={async () => {
+              closePanel();
+              await j.newChat("");
               setPage("chat");
               j.sendTyped("Brief me on my day: my schedule, mail that needs me, and what you're working on.");
             }}
             onOpenTask={(id) => { setPage("chat"); j.setReportId(id); }}
+            onOpenChat={(id) => { closePanel(); setPage("chat"); j.openChat(id); }}
             onOpenMail={() => setPage("mail")}
             onOpenCalendar={() => setPage("calendar")}
-            onOpenSettings={() => setShowSettings(true)}
-            onClose={() => setPage("chat")}
+            onOpenLibrary={() => setPage("library")}
+            onOpenSettings={() => { setSettingsTab("google"); setShowSettings(true); }}
           />
         ) : page === "projects" ? (
           <ProjectsPage

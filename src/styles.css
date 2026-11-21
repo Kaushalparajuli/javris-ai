@@ -1415,3 +1415,46 @@ button.day-stat:hover { border-color: rgba(127, 220, 255, 0.4); }
 .icon-action:disabled { opacity: 0.4; cursor: default; background: none; }
 .icon-action:focus-visible { outline: 2px solid var(--arc); outline-offset: 1px; }
 .proj-actions { display: flex; gap: 2px; align-items: center; }
+
+/* ---------- Home: the start screen ---------- */
+.libpage.home { overflow-y: auto; }
+.home-inner { width: 100%; max-width: 920px; margin: 0 auto; padding: 32px 24px 40px; display: flex; flex-direction: column; gap: 28px; }
+.home-hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; }
+.home-hero .orb { margin-bottom: 4px; }
+.home-hero h1 { margin: 0; font: 600 26px/1.2 var(--display); letter-spacing: -0.01em; text-wrap: balance; }
+.home-hero > p { margin: 0 0 14px; font-size: 13px; }
+.home-ask { width: 100%; max-width: 640px; display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 18px; border-radius: 999px; background: rgba(255, 255, 255, 0.07); border: 1px solid var(--line); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25); }
+.home-ask:focus-within { border-color: rgba(127, 220, 255, 0.45); }
+.home-ask input { flex: 1; min-width: 0; height: 40px; border: 0; background: none; color: var(--fg); font: 15px var(--body); outline: none; }
+.home-ask input::placeholder { color: var(--muted); }
+.home-send { flex: none; width: 38px; height: 38px; border-radius: 50%; border: 0; display: grid; place-items: center; background: var(--fg); cursor: pointer; }
+.home-send svg { width: 18px; height: 18px; fill: #0b1020; }
+.home-send.mic { background: rgba(127, 220, 255, 0.16); }
+.home-send.mic svg { fill: var(--arc); }
+.home-starters { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 12px; }
+.home-starters button { display: flex; align-items: center; gap: 7px; padding: 7px 13px; border-radius: 999px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.04); color: var(--fg); font: 13px var(--body); cursor: pointer; }
+.home-starters button:hover { background: rgba(255, 255, 255, 0.09); }
+.home-starters svg { width: 15px; height: 15px; fill: var(--muted); }
+
+.home-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; align-items: start; }
+.home-card { min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 14px 14px 10px; border-radius: 14px; background: rgba(255, 255, 255, 0.035); border: 1px solid var(--line); }
+.home-card > header { display: flex; align-items: center; justify-content: space-between; padding: 0 4px 6px; }
+.home-card h2 { margin: 0; font: 600 13px var(--body); }
+.home-link { border: 0; background: none; padding: 2px 4px; color: var(--arc); font: 12px var(--body); cursor: pointer; border-radius: 6px; }
+.home-link:hover { background: rgba(127, 220, 255, 0.1); }
+.home-empty { margin: 0; padding: 4px 4px 8px; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.home-foot { margin: 6px 4px 4px; font-size: 12px; color: var(--muted); }
+.home-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.home-rows li { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 6px 4px; border-radius: 8px; font-size: 13px; }
+.home-rows li.now { background: rgba(127, 220, 255, 0.08); }
+.home-rows li > button { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; border: 0; background: none; padding: 0; color: var(--fg); font: 13px var(--body); text-align: left; cursor: pointer; }
+.home-rows li:has(> button):hover { background: rgba(255, 255, 255, 0.05); }
+.home-rows b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-rows.mail b { flex: none; max-width: 40%; }
+.home-rows.mail span { min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-rows.chats b { flex: 1; }
+.home-time { flex: none; min-width: 52px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.home-rows.chats .home-time { min-width: 0; }
+.home-what { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.home-what small { color: var(--arc); font-size: 11px; }
+.home-work { display: flex; flex-direction: column; gap: 2px; margin: 0 -6px; }
